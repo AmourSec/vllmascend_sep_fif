@@ -15,7 +15,34 @@ constexpr uint32_t PLAN_MAX_BLOCKS = 64U;
 constexpr uint32_t PLAN_CONTROL_ELEMENTS = 8U;
 constexpr uint32_t PLAN_SCAN_ELEMENTS = 2U * PLAN_WARP_COUNT + PLAN_CONTROL_ELEMENTS;
 constexpr uint32_t PLAN_SCAN_BYTES = (PLAN_SCAN_ELEMENTS * sizeof(int32_t) + 31U) & ~31U;
+constexpr uint32_t PLAN_RADIX_BITS = 8U;
+constexpr uint32_t PLAN_RADIX_BINS = 1U << PLAN_RADIX_BITS;
+constexpr uint32_t PLAN_RADIX_SHARDS = PLAN_WARP_COUNT < 8U ? PLAN_WARP_COUNT : 8U;
+constexpr uint32_t PLAN_HISTOGRAM_ELEMENTS = PLAN_RADIX_SHARDS * PLAN_RADIX_BINS;
+constexpr uint32_t PLAN_HISTOGRAM_BYTES = PLAN_HISTOGRAM_ELEMENTS * sizeof(int32_t);
+// Three int64 values per warp and one block result: free count, min, max.
+constexpr uint32_t PLAN_STATS_BYTES = (3U * (PLAN_WARP_COUNT + 1U) * sizeof(int64_t) + 31U) & ~31U;
+constexpr uint32_t PLAN_FIXED_UB_BYTES = PLAN_SCAN_BYTES + PLAN_HISTOGRAM_BYTES + PLAN_STATS_BYTES;
+constexpr uint32_t PLAN_UB_BUDGET_BYTES = 112U * 1024U;
+constexpr uint32_t PLAN_PRIORITY_UB_LIMIT_BYTES = PLAN_UB_BUDGET_BYTES - PLAN_FIXED_UB_BYTES;
 constexpr uint64_t WORKSPACE_ALIGNMENT_ELEMENTS = 32U;
+
+constexpr bool CachePrioritiesInUb(uint64_t capacity) {
+  return capacity <= PLAN_PRIORITY_UB_LIMIT_BYTES / sizeof(int64_t);
+}
+
+constexpr uint32_t PriorityCacheBytes(uint64_t capacity) {
+  return CachePrioritiesInUb(capacity) ? (capacity * sizeof(int64_t) + 31U) & ~31U : 0U;
+}
+
+constexpr bool CacheTokenMapInUb(uint64_t capacity, uint64_t maxToken) {
+  return maxToken <= (PLAN_UB_BUDGET_BYTES - PLAN_FIXED_UB_BYTES - PriorityCacheBytes(capacity)) / sizeof(int32_t);
+}
+
+constexpr uint32_t LocalMemoryBytes(uint64_t capacity, uint64_t maxToken) {
+  const uint32_t mapBytes = CacheTokenMapInUb(capacity, maxToken) ? (maxToken * sizeof(int32_t) + 31U) & ~31U : 0U;
+  return PLAN_FIXED_UB_BYTES + PriorityCacheBytes(capacity) + mapBytes;
+}
 
 constexpr uint64_t WorkspaceBlockElements(uint64_t maxToken, uint64_t topk, uint64_t capacity) {
   return (maxToken + capacity + topk + WORKSPACE_ALIGNMENT_ELEMENTS - 1U) & ~(WORKSPACE_ALIGNMENT_ELEMENTS - 1U);
@@ -24,5 +51,8 @@ constexpr uint64_t WorkspaceBlockElements(uint64_t maxToken, uint64_t topk, uint
 static_assert(PLAN_THREADS > 0U && PLAN_THREADS <= 2048U, "ECHO requires 1..2048 threads");
 static_assert(PLAN_THREADS % PLAN_WARP_SIZE == 0U, "ECHO threads must contain whole warps");
 static_assert(PLAN_SCAN_BYTES % 32U == 0U, "ECHO scan storage must be 32-byte aligned");
+static_assert(PLAN_FIXED_UB_BYTES < PLAN_UB_BUDGET_BYTES, "ECHO fixed scratch exceeds the UB budget");
+static_assert(PLAN_PRIORITY_UB_LIMIT_BYTES % 32U == 0U, "ECHO priority cache must be 32-byte aligned");
+static_assert(PLAN_UB_BUDGET_BYTES <= 120U * 1024U, "ECHO dynamic UB exceeds the full-DCache budget");
 }  // namespace sparse_kv_echo_plan
 #endif

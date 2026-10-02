@@ -68,7 +68,7 @@ static ge::graphStatus SparseKvEchoPlanTiling(gert::TilingContext* context) {
   if (workspaceShape->GetOriginShape().GetShapeSize() < static_cast<int64_t>(maxBlocks * blockElements)) {
     return Fail(context, "SparseKvEchoPlan workspace is smaller than the per-AIV direct map and allocation scratch");
   }
-  const uint32_t localMemoryBytes = sparse_kv_echo_plan::PLAN_SCAN_BYTES;
+  const uint32_t localMemoryBytes = sparse_kv_echo_plan::LocalMemoryBytes(capacity, maxToken);
   if (context->SetDynUBufSize(localMemoryBytes) != ge::GRAPH_SUCCESS) {
     return Fail(context, "SparseKvEchoPlan failed to set dynamic UB size");
   }

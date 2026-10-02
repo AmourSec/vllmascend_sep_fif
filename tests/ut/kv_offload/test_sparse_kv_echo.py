@@ -20,6 +20,44 @@ KERNEL = ROOT / "csrc/attention/sparse_kv_echo_plan/op_kernel"
 
 
 class TestSparseKVEcho(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("g++"), "requires g++")
+    def test_production_ub_layout(self):
+        # Use the real 2048-thread header here; the row harness scales down
+        # threads to keep CPU execution affordable.
+        source = r"""
+#include <cassert>
+#include <cstdint>
+#include "sparse_kv_echo_plan_config.h"
+using namespace sparse_kv_echo_plan;
+static_assert(PLAN_THREADS == 2048 && PLAN_WARP_COUNT == 64);
+static_assert(LocalMemoryBytes(4096, 8192) == 75840);
+static_assert(LocalMemoryBytes(4096, 262144) == 43072);
+static_assert(CacheTokenMapInUb(4096, 8192));
+static_assert(!CacheTokenMapInUb(4096, 262144));
+static_assert(!CachePrioritiesInUb(16384));
+int main() {
+  for (uint64_t c = 1; c <= 20000; ++c) {
+    const uint64_t mapLimit = (PLAN_UB_BUDGET_BYTES - PLAN_FIXED_UB_BYTES - PriorityCacheBytes(c)) / 4;
+    for (int delta = -1; delta <= 1; ++delta) {
+      if (mapLimit == 0 && delta < 0) continue;
+      const uint64_t m = mapLimit + delta;
+      const uint32_t bytes = LocalMemoryBytes(c, m);
+      assert(bytes <= PLAN_UB_BUDGET_BYTES && bytes % 32 == 0);
+      assert(CacheTokenMapInUb(c, m) == (m <= mapLimit));
+      assert(bytes >= PLAN_FIXED_UB_BYTES + PriorityCacheBytes(c));
+      if (CacheTokenMapInUb(c, m)) assert(bytes >= PLAN_FIXED_UB_BYTES + PriorityCacheBytes(c) + m * 4);
+    }
+  }
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="echo-layout-test-") as directory:
+            tmp = Path(directory)
+            test = tmp / "layout.cpp"
+            test.write_text(source)
+            binary = tmp / "layout"
+            subprocess.run(["g++", "-std=c++17", "-I", str(KERNEL), str(test), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_workspace_layout(self):
         source = ROOT / "vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_echo.py"
         tree = ast.parse(source.read_text())

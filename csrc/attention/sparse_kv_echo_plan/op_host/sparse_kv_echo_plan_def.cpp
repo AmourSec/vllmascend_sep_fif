@@ -26,9 +26,9 @@ void AddInt64Input(OpDef& op, const char* name) {
 }
 }  // namespace
 
-class SparseKvPlan : public OpDef {
+class SparseKvEchoPlan : public OpDef {
  public:
-  explicit SparseKvPlan(const char* name) : OpDef(name) {
+  explicit SparseKvEchoPlan(const char* name) : OpDef(name) {
     AddInt64Input(*this, "reqIds");
     AddInt32Input(*this, "topkIndices");
     AddInt32Input(*this, "stablePrefixLens");
@@ -38,7 +38,7 @@ class SparseKvPlan : public OpDef {
     AddInt32Input(*this, "activeRows");
     AddInt64Input(*this, "lastReqIds");
     AddInt32Input(*this, "slotToToken");
-    AddInt32Input(*this, "lruSlots");
+    AddInt64Input(*this, "slotPriorities");
     AddInt32Input(*this, "currentSlots");
     AddInt32Input(*this, "missCount");
     AddInt32Input(*this, "missTokens");
@@ -58,10 +58,10 @@ class SparseKvPlan : public OpDef {
         .DynamicShapeSupportFlag(true)
         .NeedCheckSupportFlag(false)
         .PrecisionReduceFlag(false)
-        .ExtendCfgInfo("opFile.value", "sparse_kv_plan_apt");
+        .ExtendCfgInfo("opFile.value", "sparse_kv_echo_plan_apt");
     this->AICore().AddConfig("ascend950", config);
   }
 };
 
-OP_ADD(SparseKvPlan);
+OP_ADD(SparseKvEchoPlan);
 }  // namespace ops

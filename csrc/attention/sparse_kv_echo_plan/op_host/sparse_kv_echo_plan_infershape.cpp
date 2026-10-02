@@ -5,7 +5,7 @@
 #include "register/op_impl_registry.h"
 
 namespace ops {
-static ge::graphStatus InferShapeSparseKvPlan(gert::InferShapeContext*) { return ge::GRAPH_SUCCESS; }
+static ge::graphStatus InferShapeSparseKvEchoPlan(gert::InferShapeContext*) { return ge::GRAPH_SUCCESS; }
 
-IMPL_OP_INFERSHAPE(SparseKvPlan).InferShape(InferShapeSparseKvPlan);
+IMPL_OP_INFERSHAPE(SparseKvEchoPlan).InferShape(InferShapeSparseKvEchoPlan);
 }  // namespace ops

@@ -233,7 +233,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend950 ]]; then
         "store_kv_block_metadata"
         "k2q_csr"
         "sparse_attention_score"
-        "sparse_kv_plan"
+        "sparse_kv_echo_plan"
         "sparse_kv_transfer"
         "mla_prolog_v3"
         "msa_index_score"

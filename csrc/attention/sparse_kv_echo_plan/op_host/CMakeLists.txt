@@ -4,11 +4,11 @@
 add_op_to_compiled_list()
 
 if (BUILD_OPEN_PROJECT)
-    target_sources(op_host_aclnn PRIVATE sparse_kv_plan_def.cpp)
+    target_sources(op_host_aclnn PRIVATE sparse_kv_echo_plan_def.cpp)
 endif()
 
 add_ops_compile_options(
-    OP_NAME SparseKvPlan
+    OP_NAME SparseKvEchoPlan
     OPTIONS --cce-auto-sync=off
             -Wno-deprecated-declarations
             -mllvm -cce-vf-remove-membar=false
@@ -16,4 +16,4 @@ add_ops_compile_options(
             -mllvm -cce-aicore-dcci-before-kernel-end=false
 )
 
-add_modules_sources_with_soc(OPTYPE sparse_kv_plan ACLNNTYPE aclnn)
+add_modules_sources_with_soc(OPTYPE sparse_kv_echo_plan ACLNNTYPE aclnn)

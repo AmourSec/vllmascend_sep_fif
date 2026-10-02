@@ -2,7 +2,7 @@
  * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
-#include "sparse_kv_plan_tiling.h"
+#include "sparse_kv_echo_plan_tiling.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -11,41 +11,32 @@
 #include "log/log.h"
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
-#include "../op_kernel/sparse_kv_plan_config.h"
+#include "../op_kernel/sparse_kv_echo_plan_config.h"
 
 namespace optiling {
 namespace {
-constexpr uint64_t MIN_HASH_CAPACITY = 32U;
-constexpr uint32_t PLAN_BLOCKS = 64U;
-
-uint64_t HashCapacity(int64_t topk) {
-  uint64_t target = static_cast<uint64_t>(topk) * 2U;
-  uint64_t capacity = MIN_HASH_CAPACITY;
-  while (capacity < target) {
-    capacity <<= 1U;
-  }
-  return capacity;
-}
-
 ge::graphStatus Fail(gert::TilingContext* context, const char* message) {
   OP_LOGE(context->GetNodeName(), "%s", message);
   return ge::GRAPH_FAILED;
 }
 }  // namespace
 
-static ge::graphStatus SparseKvPlanTiling(gert::TilingContext* context) {
+static ge::graphStatus SparseKvEchoPlanTiling(gert::TilingContext* context) {
   const gert::StorageShape* reqShape = context->GetInputShape(0);
   const gert::StorageShape* topkShape = context->GetInputShape(1);
   const gert::StorageShape* blockTableShape = context->GetInputShape(5);
+  const gert::StorageShape* priorityShape = context->GetInputShape(9);
+  const gert::StorageShape* workspaceShape = context->GetInputShape(14);
   const auto* attrs = context->GetAttrs();
-  if (reqShape == nullptr || topkShape == nullptr || blockTableShape == nullptr || attrs == nullptr) {
-    return Fail(context, "SparseKvPlan requires shapes and attributes");
+  if (reqShape == nullptr || topkShape == nullptr || blockTableShape == nullptr || priorityShape == nullptr ||
+      workspaceShape == nullptr || attrs == nullptr) {
+    return Fail(context, "SparseKvEchoPlan requires shapes and attributes");
   }
   const gert::Shape& reqOrigin = reqShape->GetOriginShape();
   const gert::Shape& topkOrigin = topkShape->GetOriginShape();
   const gert::Shape& blockTableOrigin = blockTableShape->GetOriginShape();
   if (reqOrigin.GetDimNum() != 1 || topkOrigin.GetDimNum() != 2 || blockTableOrigin.GetDimNum() != 2) {
-    return Fail(context, "SparseKvPlan expects req_ids rank 1 and topk/block_table rank 2");
+    return Fail(context, "SparseKvEchoPlan expects req_ids rank 1 and topk/block_table rank 2");
   }
 
   const int64_t maxRows = topkOrigin.GetDim(0);
@@ -58,33 +49,32 @@ static ge::graphStatus SparseKvPlanTiling(gert::TilingContext* context) {
   const int64_t hostNumBlocks = *attrs->GetInt(4);
   if (maxRows <= 0 || maxRequests <= 0 || topk <= 0 || capacity <= 0 || maxToken <= 0 || maxNumBlocks <= 0 ||
       blockSize <= 0 || hostNumBlocks <= 0) {
-    return Fail(context, "SparseKvPlan received a non-positive shape or attribute");
+    return Fail(context, "SparseKvEchoPlan received a non-positive shape or attribute");
   }
   if (blockTableOrigin.GetDim(0) != maxRequests || topkOrigin.GetDim(1) != topk) {
-    return Fail(context, "SparseKvPlan input shapes do not match request/topk attributes");
+    return Fail(context, "SparseKvEchoPlan input shapes do not match request/topk attributes");
   }
-  if (topk > std::numeric_limits<int32_t>::max() / 2 || capacity > std::numeric_limits<int32_t>::max() ||
-      maxToken > std::numeric_limits<int32_t>::max()) {
-    return Fail(context, "SparseKvPlan shape exceeds int32 kernel limits");
+  if (topk > capacity || capacity > std::numeric_limits<int32_t>::max() ||
+      maxToken > std::numeric_limits<int32_t>::max() || blockSize > std::numeric_limits<int32_t>::max()) {
+    return Fail(context, "SparseKvEchoPlan shape exceeds int32 kernel limits");
   }
-
-  const uint64_t hashCapacity = HashCapacity(topk);
-  const uint64_t rowElements = 3U * hashCapacity + 2U * static_cast<uint64_t>(capacity) + static_cast<uint64_t>(topk);
-  const uint64_t rowBytes = rowElements * sizeof(int32_t);
-  const uint64_t alignedRowBytes = (rowBytes + 31U) & ~static_cast<uint64_t>(31U);
-  const uint64_t localBytes = sparse_kv_plan::PLAN_SCAN_BYTES +
-                              (alignedRowBytes <= sparse_kv_plan::PLAN_ROW_UB_LIMIT_BYTES ? alignedRowBytes : 0U);
-  if (localBytes > std::numeric_limits<uint32_t>::max()) {
-    return Fail(context, "SparseKvPlan local memory size overflow");
+  const auto& priorityOrigin = priorityShape->GetOriginShape();
+  if (priorityOrigin.GetDimNum() != 2 || priorityOrigin.GetDim(0) < maxRows ||
+      priorityOrigin.GetDim(1) != capacity + 1) {
+    return Fail(context, "SparseKvEchoPlan priorities must have shape [at least rows, capacity + 1]");
   }
-  const uint32_t localMemoryBytes = static_cast<uint32_t>(localBytes);
+  const uint64_t blockElements = sparse_kv_echo_plan::WorkspaceBlockElements(maxToken, topk, capacity);
+  const uint32_t maxBlocks = std::min<int64_t>(maxRows, sparse_kv_echo_plan::PLAN_MAX_BLOCKS);
+  if (workspaceShape->GetOriginShape().GetShapeSize() < static_cast<int64_t>(maxBlocks * blockElements)) {
+    return Fail(context, "SparseKvEchoPlan workspace is smaller than the per-AIV direct map and allocation scratch");
+  }
+  const uint32_t localMemoryBytes = sparse_kv_echo_plan::PLAN_SCAN_BYTES;
   if (context->SetDynUBufSize(localMemoryBytes) != ge::GRAPH_SUCCESS) {
-    return Fail(context, "SparseKvPlan failed to set dynamic UB size");
+    return Fail(context, "SparseKvEchoPlan failed to set dynamic UB size");
   }
 
-  SparseKvPlanTilingData tiling;
-  tiling.set_hashCapacity(hashCapacity);
-  tiling.set_workspaceRowElements(rowElements);
+  SparseKvEchoPlanTilingData tiling;
+  tiling.set_workspaceBlockElements(blockElements);
   tiling.set_maxRows(maxRows);
   tiling.set_topk(topk);
   tiling.set_capacity(capacity);
@@ -97,12 +87,12 @@ static ge::graphStatus SparseKvPlanTiling(gert::TilingContext* context) {
 
   auto platformInfo = context->GetPlatformInfo();
   if (platformInfo == nullptr) {
-    return Fail(context, "SparseKvPlan cannot query platform information");
+    return Fail(context, "SparseKvEchoPlan cannot query platform information");
   }
   const platform_ascendc::PlatformAscendC platform(platformInfo);
-  const uint32_t blockDim = std::min<uint32_t>(PLAN_BLOCKS, platform.GetCoreNumAiv());
+  const uint32_t blockDim = std::min<uint32_t>(maxBlocks, platform.GetCoreNumAiv());
   if (blockDim == 0) {
-    return Fail(context, "SparseKvPlan found zero AIV cores");
+    return Fail(context, "SparseKvEchoPlan found zero AIV cores");
   }
   context->SetBlockDim(blockDim);
   size_t* workspaceSize = context->GetWorkspaceSizes(1);
@@ -112,7 +102,9 @@ static ge::graphStatus SparseKvPlanTiling(gert::TilingContext* context) {
   return ge::GRAPH_SUCCESS;
 }
 
-static ge::graphStatus ParseSparseKvPlan(gert::TilingParseContext*) { return ge::GRAPH_SUCCESS; }
+static ge::graphStatus ParseSparseKvEchoPlan(gert::TilingParseContext*) { return ge::GRAPH_SUCCESS; }
 
-IMPL_OP_OPTILING(SparseKvPlan).Tiling(SparseKvPlanTiling).TilingParse<SparseKvPlanCompileInfo>(ParseSparseKvPlan);
+IMPL_OP_OPTILING(SparseKvEchoPlan)
+    .Tiling(SparseKvEchoPlanTiling)
+    .TilingParse<SparseKvEchoPlanCompileInfo>(ParseSparseKvEchoPlan);
 }  // namespace optiling

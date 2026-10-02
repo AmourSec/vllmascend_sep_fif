@@ -115,7 +115,7 @@ void device_print_tensor_meta(const at::Tensor& tensor)
 }
 
 #ifdef VLLM_ASCEND_ENABLE_SPARSE_KV_OFFLOAD
-void npu_sparse_kv_plan_transfer_meta(
+void npu_sparse_kv_echo_plan_transfer_meta(
     const at::Tensor &, const at::Tensor &, const at::Tensor &,
     const at::Tensor &, const at::Tensor &, const at::Tensor &,
     const at::Tensor &, const at::Tensor &, const at::Tensor &,
@@ -2212,8 +2212,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_sparse_attention_score", &vllm_ascend::meta::npu_sparse_attention_score_meta);
     ops.impl("npu_k2q_csr", &vllm_ascend::meta::npu_k2q_csr_meta);
 #ifdef VLLM_ASCEND_ENABLE_SPARSE_KV_OFFLOAD
-    ops.impl("npu_sparse_kv_plan_transfer",
-             &vllm_ascend::meta::npu_sparse_kv_plan_transfer_meta);
+    ops.impl("npu_sparse_kv_echo_plan_transfer",
+             &vllm_ascend::meta::npu_sparse_kv_echo_plan_transfer_meta);
     ops.impl("npu_sparse_kv_transfer",
              &vllm_ascend::meta::npu_sparse_kv_transfer_meta);
 #endif

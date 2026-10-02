@@ -5,37 +5,31 @@ from dataclasses import dataclass
 
 import torch
 
-_PLAN_ROW_UB_LIMIT_BYTES = 112 * 1024
-_MIN_HASH_CAPACITY = 32
+_ECHO_MAX_BLOCKS = 64
+_WORKSPACE_ALIGNMENT_ELEMENTS = 32
 
 
-def sparse_kv_plan_hash_capacity(topk: int) -> int:
-    """Return the power-of-two hash capacity used by SparseKvPlan."""
-    target = 2 * topk
-    capacity = _MIN_HASH_CAPACITY
-    while capacity < target:
-        capacity <<= 1
-    return capacity
-
-
-def sparse_kv_plan_workspace_elements(topk: int, capacity: int) -> int:
-    hash_capacity = sparse_kv_plan_hash_capacity(topk)
-    return 3 * hash_capacity + 2 * capacity + topk
+def echo_workspace_elements(max_rows: int, max_token: int, topk: int, capacity: int) -> int:
+    """One direct map and allocation scratch per AIV, shared across all layers."""
+    elements = max_token + capacity + topk
+    alignment = _WORKSPACE_ALIGNMENT_ELEMENTS
+    block_elements = (elements + alignment - 1) // alignment * alignment
+    return min(max_rows, _ECHO_MAX_BLOCKS) * block_elements
 
 
 @dataclass
-class _SparseKVSimtLayerState:
+class _SparseKVEchoLayerState:
     last_req_ids: torch.Tensor
     slot_to_token: torch.Tensor
-    lru_slots: torch.Tensor
+    slot_priorities: torch.Tensor
     miss_count: torch.Tensor
     miss_tokens: torch.Tensor
     miss_slots: torch.Tensor
     host_cache_bases: torch.Tensor
 
 
-class SparseKVSimtLru:
-    """Persistent A5 device state for sparse-KV Plan and Transfer.
+class SparseKVEcho:
+    """ECHO-style priority cache management for the existing per-query KV pool.
 
     All tensors are allocated while KV caches are registered.  The decode hot
     path only selects existing views and invokes custom operators, which keeps
@@ -58,8 +52,8 @@ class SparseKVSimtLru:
         current_slots: torch.Tensor,
         device: torch.device,
     ) -> None:
-        if max_rows <= 0 or topk <= 0 or topk > capacity:
-            raise ValueError(f"Invalid sparse KV SIMT shape: rows={max_rows}, topk={topk}, capacity={capacity}")
+        if max_rows <= 0 or topk <= 0 or topk > capacity or max_token <= 0:
+            raise ValueError(f"Invalid sparse KV ECHO shape: rows={max_rows}, topk={topk}, capacity={capacity}")
         self.max_rows = max_rows
         self.topk = topk
         self.capacity = capacity
@@ -72,17 +66,15 @@ class SparseKVSimtLru:
         self.active_rows = torch.zeros(1, dtype=torch.int32, device=device)
         self.plan_owner_layer_id: int | None = None
 
-        row_elements = sparse_kv_plan_workspace_elements(topk, capacity)
-        workspace_elements = (
-            1 if row_elements * torch.int32.itemsize <= _PLAN_ROW_UB_LIMIT_BYTES else max_rows * row_elements
-        )
+        workspace_elements = echo_workspace_elements(max_rows, max_token, topk, capacity)
         self.compact_workspace = torch.empty(workspace_elements, dtype=torch.int32, device=device)
-        initial_lru = torch.arange(capacity, dtype=torch.int32, device=device).view(1, capacity)
         self.layers = [
-            _SparseKVSimtLayerState(
+            _SparseKVEchoLayerState(
                 last_req_ids=torch.full((max_rows,), -1, dtype=torch.int64, device=device),
                 slot_to_token=torch.full((max_rows, capacity), -1, dtype=torch.int32, device=device),
-                lru_slots=initial_lru.repeat(max_rows, 1),
+                # The final column is the row's device-side clock. It is reset
+                # with last_req_ids; int64 avoids the reference's int32 wrap.
+                slot_priorities=torch.full((max_rows, capacity + 1), -1, dtype=torch.int64, device=device),
                 miss_count=torch.zeros(max_rows, dtype=torch.int32, device=device),
                 miss_tokens=torch.full((max_rows, topk), -1, dtype=torch.int32, device=device),
                 miss_slots=torch.full((max_rows, topk), -1, dtype=torch.int32, device=device),
@@ -95,7 +87,7 @@ class SparseKVSimtLru:
             for layer_id in range(len(host_k_bases))
         ]
 
-        self._plan_transfer_op = torch.ops._C_ascend.npu_sparse_kv_plan_transfer
+        self._plan_transfer_op = torch.ops._C_ascend.npu_sparse_kv_echo_plan_transfer
         self._transfer_op = torch.ops._C_ascend.npu_sparse_kv_transfer
 
     def set_active_rows(self, num_rows: int) -> None:
@@ -127,7 +119,7 @@ class SparseKVSimtLru:
             self.active_rows,
             state.last_req_ids,
             state.slot_to_token,
-            state.lru_slots,
+            state.slot_priorities,
             self.current_slots,
             state.miss_count,
             state.miss_tokens,

@@ -31,7 +31,7 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.utils import CpuGpuBuffer
 
 from vllm_ascend.ascend_config import SparseKVOffloadConfig, get_ascend_config
-from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_simt_lru import SparseKVSimtLru
+from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_echo import SparseKVEcho
 from vllm_ascend.utils import AscendDeviceType, bootstrap_custom_op_env, enable_custom_op, get_ascend_device_type
 
 # Main BF16 cache:
@@ -81,7 +81,7 @@ _SPARSE_KV_OFFLOAD_OP_NAMES = (
     "sparse_kv_compute_lru_resident_addrs",
     "sparse_kv_restore_bfloat16_tensor",
     "sparse_kv_restore_int16_tensor",
-    "npu_sparse_kv_plan_transfer",
+    "npu_sparse_kv_echo_plan_transfer",
     "npu_sparse_kv_transfer",
 )
 
@@ -858,7 +858,7 @@ class SparseKVOffloadManager:
         self.dvas_k_bases = list(self.hvas_k_bases)
         self.dvas_v_bases = list(self.hvas_v_bases)
 
-    def _initialize_simt_lru_backend(self, device: torch.device) -> None:
+    def _initialize_echo_backend(self, device: torch.device) -> None:
         host_num_blocks = int(self.k_caches_cpu[0].shape[0])
         for layer_id, (k_cache, v_cache) in enumerate(zip(self.k_caches_cpu, self.v_caches_cpu)):
             if int(k_cache.shape[0]) != host_num_blocks or int(v_cache.shape[0]) != host_num_blocks:
@@ -867,7 +867,7 @@ class SparseKVOffloadManager:
                     f"layer={layer_id}, expected={host_num_blocks}, "
                     f"k_blocks={k_cache.shape[0]}, v_blocks={v_cache.shape[0]}"
                 )
-        self.simt_lru = SparseKVSimtLru(
+        self.echo_cache = SparseKVEcho(
             max_rows=self.max_num_topk_rows,
             topk=self.topk,
             capacity=self.topk_buffer_size,
@@ -882,7 +882,7 @@ class SparseKVOffloadManager:
             device=device,
         )
         self._onload_topk_kv_impl = self._onload_topk_kv_simt
-        logger.info_once("Sparse KV offload uses the Atlas A5 NPU SIMT LRU planner with persistent device state.")
+        logger.info_once("Sparse KV offload uses the Atlas A5 NPU ECHO cache planner with persistent device state.")
 
     def register_kv_caches(
         self,
@@ -973,7 +973,7 @@ class SparseKVOffloadManager:
         self.addr_v_bases: list[int] = [t.data_ptr() for t in self.topk_buffers_v]
         self._initialize_pool_address_tables()
         if self.rank_local_host_pool:
-            self._initialize_simt_lru_backend(device)
+            self._initialize_echo_backend(device)
             return
         self._onload_topk_kv_impl = self._onload_topk_kv_cpu_backend
 
@@ -1382,14 +1382,14 @@ class SparseKVOffloadManager:
         del num_reqs, current_slots_npu, capturing
         layer_id = self._get_offload_layer_id(layer_name)
         if layer_id in (0, self.mtp_layer_id):
-            self.simt_lru.set_active_rows(num_tokens)
+            self.echo_cache.set_active_rows(num_tokens)
         # Backbone skip layers keep the same row mapping and mirror the Plan
         # owner's resident slots, so only their layer-specific payload needs
         # copying. MTP compacts TopK rows between draft steps; those rows must
         # be planned again even though the Indexer result itself is reused.
         reuse_previous_plan = skip_topk and layer_id != self.mtp_layer_id
         if reuse_previous_plan:
-            self.simt_lru.transfer_reused_plan(
+            self.echo_cache.transfer_reused_plan(
                 layer_id=layer_id,
                 token_to_req=token_to_req_npu,
                 block_table=block_table,
@@ -1397,7 +1397,7 @@ class SparseKVOffloadManager:
                 resident_v=self.topk_buffers_v[layer_id],
             )
             return
-        self.simt_lru.plan_and_transfer(
+        self.echo_cache.plan_and_transfer(
             layer_id=layer_id,
             req_ids=req_ids_npu,
             topk_indices=topk_indices_npu,

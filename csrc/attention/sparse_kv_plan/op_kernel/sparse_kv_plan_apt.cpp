@@ -3,22 +3,23 @@
  * MemFabric_Hybrid is licensed under Mulan PSL v2.
  *
  * 昇腾 950PR/950DT：运行时 shape 的 Sparse KV Plan，64 个 AIV block，
- * 每个有任务的 block 调用一个 2048-thread SIMT VF。
+ * 每个有任务的 block 调用一个 1024-thread SIMT VF。
  *
  * 本实现通过 vLLM Ascend 自定义算子接口接收持久化的 NPU LRU 状态。
  * batch、topk、capacity、max_token 均来自运行时或 tiling 数据。
  *
  * 阅读顺序：Host 启动函数 -> mixed kernel 外壳 -> SIMT VF -> ProcessRuntimeRow。
- * 一条 request 的 Plan 由一个 block 完成，避免引入跨 block 同步。
+ * 一条 query 行的 Plan 由一个 block 完成，避免引入跨 block 同步。
  * block b 处理 b、b+blockDim、b+2*blockDim……行；B 小于 blockDim 时，
  * 多余 block 在外壳直接返回。blockDim 上限为 64，实际值取决于目标 SKU 的 AIV 数量。
  *
  * 相对原版的主要修改：
- * 1. 2048 线程对应 64 个 warp；重新实现两层 scan，不能只修改线程数常量。
+ * 1. 1024 线程对应 32 个 warp；二级 scan 并行计算，调用者保证临时区复用同步。
  * 2. 单行临时数组不超过 112 KiB 时放进片上 UB，否则使用原 GM workspace。
  * 3. 用一个 32 位整数打包 hit/evict 两种标志，一次 scan 得到两种稳定排名。
- * 4. 直接遍历 hashOwner 发布 resident hit，省去原来的第二轮 resident 哈希查询。
- * 5. 行内循环采用 32 位无符号下标；跨行偏移、地址和 workspace 大小保留 64 位。
+ * 4. 复用插入所得 bucket，把 resident hit 回填与 miss 压缩融合。
+ * 5. hit/evict 共用一个 capacity 数组；请求 ID 改变时走冷路径。
+ * 6. 行内循环采用 32 位无符号下标；跨行偏移、地址和 workspace 大小保留 64 位。
  *
  * 必须保留的业务语义：
  * - LRU 从旧到新排列，miss 优先使用最老的可淘汰 slot。
@@ -32,7 +33,7 @@
  * 集成与调优：
  * - Plan 和 Transfer 需要在同一 stream 依次启动，或由上层建立等价事件依赖。
  * - UB 快路径不读写用户提供的 GM 临时区。
- * - 2048 是线程配置，并不保证比 1024 快。应检查目标 CANN 的编译资源报告、
+ * - 线程数是编译期配置，并不保证越多越快。应检查目标 CANN 的编译资源报告、
  *   寄存器溢出以及实机时延。
  *
  * API 依据（Huawei 官方开发仓文档，master 预览；以部署的 CANN 版本为准）：
@@ -59,6 +60,7 @@ using sparse_kv_plan::PLAN_THREADS;
 using sparse_kv_plan::PLAN_WARP_COUNT;
 using sparse_kv_plan::PLAN_WARP_SIZE;
 constexpr int32_t INVALID_TOKEN = -1;
+constexpr int32_t PENDING_SLOT = -2;
 constexpr int32_t HASH_EMPTY = -1;
 constexpr int32_t HASH_POSITION_EMPTY = INT32_MAX;
 constexpr uint32_t HASH_BUCKET_INVALID = UINT32_MAX;
@@ -75,7 +77,7 @@ constexpr uint32_t CONTROL_RESET = 1U;
 // 动态 UB 最多为 112 KiB + scan workspace，为 SIMT DCache 和系统预留区域留下空间。
 // 同一 block 顺序处理多行时复用这块内存，因此占用不随 batch 增长。
 // 低 12 位表示 evict 数，高位表示 hit 数。
-// 每个 tile 最多 2048 项，而 2^12=4096，因此低位不会进位到 hit 字段。
+// 每个 tile 最多 PLAN_THREADS 项，而 2^12=4096，因此低位不会进位到 hit 字段。
 constexpr uint32_t COUNT_SHIFT = 12U;
 constexpr int32_t COUNT_MASK = (1U << COUNT_SHIFT) - 1U;
 
@@ -95,22 +97,54 @@ struct SparseKvPlanTilingData {
   uint32_t localMemoryBytes;
 };
 
+
+
+// Only warp 0 participates. Every lane, including padding lanes, executes
+// every shuffle. Process warp totals in 32-item groups for any warp count.
+__simt_callee__ __aicore__ inline void PublishWarpBases(__ubuf__ int32_t* workspace, uint32_t thread) {
+  if (thread >= PLAN_WARP_SIZE) {
+    return;
+  }
+  __ubuf__ int32_t* warpTotals = workspace + WARP_TOTALS_OFFSET;
+  __ubuf__ int32_t* warpBases = workspace + WARP_BASES_OFFSET;
+  __ubuf__ int32_t* control = workspace + CONTROL_OFFSET;
+  const uint32_t lane = thread;
+  int32_t carry = 0;
+  for (uint32_t base = 0U; base < PLAN_WARP_COUNT; base += PLAN_WARP_SIZE) {
+    const uint32_t index = base + lane;
+    const int32_t value = index < PLAN_WARP_COUNT ? warpTotals[index] : 0;
+    int32_t inclusive = value;
+    for (uint32_t offset = 1U; offset < PLAN_WARP_SIZE; offset <<= 1U) {
+      const int32_t prior = asc_shfl_up(inclusive, offset, PLAN_WARP_SIZE);
+      if (lane >= offset) {
+        inclusive += prior;
+      }
+    }
+    if (index < PLAN_WARP_COUNT) {
+      warpBases[index] = carry + inclusive - value;
+    }
+    carry += asc_shfl(inclusive, PLAN_WARP_SIZE - 1U, PLAN_WARP_SIZE);
+  }
+  if (lane == 0U) {
+    control[CONTROL_TOTAL] = carry;
+  }
+}
+
 /**
  * 对完整 SIMT block 做独占前缀和，返回当前线程之前的输入总和。
  * 输入可以是 0/1，也可以是打包后的 evict + (hit << 12)。
  *
  * 第一级：每个 warp 的 32 个线程用 shuffle 计算 inclusive scan。
- * 第二级：线程 0 顺序扫描所有 warp total，生成每个 warp 的起点。
+ * 第二级：warp 0 并行扫描 warp total，生成每个 warp 的起点。
  * warp 数完全由 PLAN_THREADS 推导，后续调整线程数无需重写 scan 布局。
  *
  * 所有线程必须参加所有 barrier。尾 tile 的无效线程输入 0，不能提前返回。
- * 最后的 barrier 还保证所有线程已读取 warpBases，下一次 scan 才能复用它。
+ * 调用者的 scatter 后 barrier 保证本轮全部读完，下一次 scan 才能复用。
  */
 __simt_callee__ __aicore__ inline int32_t BlockExclusiveScan(__ubuf__ int32_t* workspace, int32_t value,
                                                              uint32_t thread) {
   __ubuf__ int32_t* warpTotals = workspace + WARP_TOTALS_OFFSET;
   __ubuf__ int32_t* warpBases = workspace + WARP_BASES_OFFSET;
-  __ubuf__ int32_t* control = workspace + CONTROL_OFFSET;
   const uint32_t lane = thread & (PLAN_WARP_SIZE - 1U);
   const uint32_t warp = thread / PLAN_WARP_SIZE;
   int32_t inclusive = value;
@@ -125,19 +159,12 @@ __simt_callee__ __aicore__ inline int32_t BlockExclusiveScan(__ubuf__ int32_t* w
   }
   asc_syncthreads();
 
-  if (thread == 0U) {
-    int32_t blockTotal = 0;
-    for (uint32_t warpIndex = 0U; warpIndex < PLAN_WARP_COUNT; ++warpIndex) {
-      warpBases[warpIndex] = blockTotal;
-      blockTotal += warpTotals[warpIndex];
-    }
-    control[CONTROL_TOTAL] = blockTotal;
-  }
+  PublishWarpBases(workspace, thread);
   asc_syncthreads();
 
-  const int32_t exclusive = warpBases[warp] + inclusive - value;
-  asc_syncthreads();
-  return exclusive;
+  // Every call site consumes CONTROL_TOTAL, scatters its output, then
+  // executes a block barrier before the next scan or scratch reuse.
+  return warpBases[warp] + inclusive - value;
 }
 
 // H 是 2 的幂，线性探测可以用 & (H-1) 环绕。bucket 使用无符号类型，
@@ -159,19 +186,20 @@ __simt_callee__ __aicore__ inline uint32_t HashToken(int32_t token, uint32_t has
  * CAS 决定哪个 token 占桶，atomic_min 确保重复 token 保留最早 TopK 位置。
  */
 template <typename ScratchPtr>
-__simt_callee__ __aicore__ inline void InsertTopkToken(ScratchPtr keys, ScratchPtr firstPositions, int32_t token,
-                                                       int32_t position, uint32_t hashCapacity) {
+__simt_callee__ __aicore__ inline uint32_t InsertTopkToken(ScratchPtr keys, ScratchPtr firstPositions, int32_t token,
+                                                           int32_t position, uint32_t hashCapacity) {
   uint32_t bucket = HashToken(token, hashCapacity);
   const uint32_t mask = hashCapacity - 1U;
   for (uint32_t probe = 0U; probe < hashCapacity; ++probe) {
     const int32_t old = asc_atomic_cas(keys + bucket, HASH_EMPTY, token);
     if (old == HASH_EMPTY || old == token) {
       asc_atomic_min(firstPositions + bucket, position);
-      return;
+      return bucket;
     }
     bucket = (bucket + 1U) & mask;
   }
-  // 合法 helper 产生至少 2*topk 个桶，因此不会填满；保留有界循环防止死循环。
+  // 合法 helper 产生至少 2*topk 个桶,因此不会填满;保留有界循环防止死循环。
+  return HASH_BUCKET_INVALID;
 }
 
 template <typename ScratchPtr>
@@ -211,13 +239,65 @@ __simt_callee__ __aicore__ inline bool IsSourceTokenValid(int64_t row, int32_t t
   return physicalBlock >= 0 && physicalBlock < hostNumBlocks;
 }
 
+// Request-ID changes reset the row to identity LRU. Duplicated valid TopK
+// entries intentionally remain independent misses, matching the baseline.
+template <typename ScratchPtr>
+__simt_callee__ __aicore__ inline void ProcessColdRow(
+    __ubuf__ int32_t* scanWorkspace, ScratchPtr missPositions, int64_t row, uint32_t thread,
+    __gm__ int64_t* reqIds, __gm__ int64_t* lastReqIds, __gm__ int32_t* topkIndices,
+    __gm__ int32_t* visibleSeqLens, __gm__ int32_t* tokenToReq, __gm__ int32_t* blockTable,
+    __gm__ int32_t* slotToToken, __gm__ int32_t* lruSlots, __gm__ int32_t* currentSlots,
+    __gm__ int32_t* missCount, __gm__ int32_t* missTokens, __gm__ int32_t* missSlots,
+    uint32_t topk, uint32_t capacity, int32_t maxToken, int64_t maxRequests,
+    int64_t maxNumBlocks, int64_t hostNumBlocks, int32_t blockSize) {
+  const int64_t topkBase = row * static_cast<int64_t>(topk);
+  const int64_t capacityBase = row * static_cast<int64_t>(capacity);
+  __ubuf__ int32_t* control = scanWorkspace + CONTROL_OFFSET;
+  for (uint32_t slot = thread; slot < capacity; slot += PLAN_THREADS) {
+    slotToToken[capacityBase + slot] = INVALID_TOKEN;
+  }
+  int32_t count = 0;
+  for (uint32_t tile = 0U; tile < topk; tile += PLAN_THREADS) {
+    const uint32_t position = tile + thread;
+    const int32_t flag = position < topk &&
+        IsSourceTokenValid(row, topkIndices[topkBase + position], visibleSeqLens, tokenToReq,
+                           blockTable, maxToken, maxRequests, maxNumBlocks, hostNumBlocks, blockSize);
+    const int32_t rank = BlockExclusiveScan(scanWorkspace, flag, thread);
+    const int32_t total = control[CONTROL_TOTAL];
+    if (flag != 0) {
+      missPositions[count + rank] = static_cast<int32_t>(position);
+    }
+    asc_syncthreads();  // Includes slot invalidation and scan-control consumption.
+    count += total;
+  }
+  const int32_t assigned = count < static_cast<int32_t>(capacity) ? count : static_cast<int32_t>(capacity);
+  for (uint32_t miss = thread; miss < static_cast<uint32_t>(assigned); miss += PLAN_THREADS) {
+    const int32_t position = missPositions[miss];
+    const int32_t token = topkIndices[topkBase + position];
+    slotToToken[capacityBase + miss] = token;
+    currentSlots[topkBase + position] = static_cast<int32_t>(miss);
+    missTokens[topkBase + miss] = token;
+    missSlots[topkBase + miss] = static_cast<int32_t>(miss);
+  }
+  const uint32_t unused = capacity - static_cast<uint32_t>(assigned);
+  for (uint32_t order = thread; order < capacity; order += PLAN_THREADS) {
+    lruSlots[capacityBase + order] = static_cast<int32_t>(order < unused ? assigned + order : order - unused);
+  }
+  if (thread == 0U) {
+    const int32_t request = tokenToReq[row];
+    lastReqIds[row] = request >= 0 && request < maxRequests ? reqIds[request] : -1;
+    missCount[row] = assigned;
+  }
+  asc_syncthreads();  // Cold return is block-uniform; finish writes before reusing scratch.
+}
+
 /**
- * 一次调用只处理一条请求。只有临时数组允许放 UB；reqId、resident、LRU 等
+ * 一次调用只处理一条 query 行。只有临时数组允许放 UB；reqId、resident、LRU 等
  * 持久状态始终保存在 GM，并由 row 定位，不能依赖上一轮由哪个物理核处理。
  *
- * rowWorkspace 的六段布局（单位 int32）：
- * keys[H]、firstPos[H]、owner[H]、evictSlots[C]、hitSlots[C]、missPositions[T]。
- * H=hashCapacity，C=capacity，T=topk，总大小为 (3H+2C+T)*4 字节。
+ * rowWorkspace 的五段布局（单位 int32）：
+ * keys[H]、firstPos[H]、owner[H]、partitionSlots[C]、missPositions[T]。
+ * H=hashCapacity，C=capacity，T=topk，总大小为 (3H+C+T)*4 字节。
  */
 template <typename ScratchPtr>
 __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
@@ -235,19 +315,15 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
   ScratchPtr hashFirstPos = hashKeys + hashCapacity;
   ScratchPtr hashOwner = hashFirstPos + hashCapacity;
   ScratchPtr evictableSlots = hashOwner + hashCapacity;
-  ScratchPtr hitSlots = evictableSlots + capacity;
-  ScratchPtr missPositions = hitSlots + capacity;
+  // Evictable slots grow from the front; hits grow backwards from the end.
+  // Their total never exceeds capacity, even when invalid LRU entries are skipped.
+  ScratchPtr missPositions = evictableSlots + capacity;
 
-  // 阶段 1：每个线程以 2048 为步长初始化输出与 hash，支持任意合法 runtime T/H。
+  // 阶段 1：每个线程以 PLAN_THREADS 为步长初始化输出与 hash，支持任意合法 runtime T/H。
   for (uint32_t pos = thread; pos < topk; pos += PLAN_THREADS) {
     currentSlots[topkBase + pos] = INVALID_TOKEN;
     missTokens[topkBase + pos] = INVALID_TOKEN;
     missSlots[topkBase + pos] = INVALID_TOKEN;
-  }
-  for (uint32_t i = thread; i < hashCapacity; i += PLAN_THREADS) {
-    hashKeys[i] = HASH_EMPTY;
-    hashFirstPos[i] = HASH_POSITION_EMPTY;
-    hashOwner[i] = INVALID_TOKEN;
   }
   if (thread == 0U) {
     missCount[row] = 0;
@@ -257,16 +333,19 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
   }
   asc_syncthreads();
 
-  // 阶段 2：同一 batch 行换成新 request 时，必须重置该行缓存和 LRU。
+  // CONTROL_RESET is published by thread 0 and read after a block barrier.
+  // This branch is uniform across all threads; no MTP suffix-only shortcut.
   if (control[CONTROL_RESET] != 0) {
-    for (uint32_t slot = thread; slot < capacity; slot += PLAN_THREADS) {
-      slotToToken[capacityBase + slot] = INVALID_TOKEN;
-      lruSlots[capacityBase + slot] = static_cast<int32_t>(slot);
-    }
-    if (thread == 0U) {
-      const int32_t request = tokenToReq[row];
-      lastReqIds[row] = request >= 0 && request < maxRequests ? reqIds[request] : -1;
-    }
+    ProcessColdRow(scanWorkspace, missPositions, row, thread, reqIds, lastReqIds, topkIndices,
+                   visibleSeqLens, tokenToReq, blockTable, slotToToken, lruSlots, currentSlots,
+                   missCount, missTokens, missSlots, topk, capacity, maxToken, maxRequests,
+                   maxNumBlocks, hostNumBlocks, blockSize);
+    return;
+  }
+  for (uint32_t i = thread; i < hashCapacity; i += PLAN_THREADS) {
+    hashKeys[i] = HASH_EMPTY;
+    hashFirstPos[i] = HASH_POSITION_EMPTY;
+    hashOwner[i] = INVALID_TOKEN;
   }
   asc_syncthreads();
 
@@ -275,7 +354,11 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
     const int32_t token = topkIndices[topkBase + pos];
     if (IsSourceTokenValid(row, token, visibleSeqLens, tokenToReq, blockTable, maxToken, maxRequests, maxNumBlocks,
                            hostNumBlocks, blockSize)) {
-      InsertTopkToken(hashKeys, hashFirstPos, token, static_cast<int32_t>(pos), hashCapacity);
+      currentSlots[topkBase + pos] = PENDING_SLOT;
+      missPositions[pos] = static_cast<int32_t>(
+          InsertTopkToken(hashKeys, hashFirstPos, token, static_cast<int32_t>(pos), hashCapacity));
+    } else {
+      missPositions[pos] = static_cast<int32_t>(HASH_BUCKET_INVALID);
     }
   }
   asc_syncthreads();
@@ -328,37 +411,28 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
       evictableSlots[evictableCount + evictRank] = slot;
     }
     if (hitFlag != 0) {
-      hitSlots[hitCount + hitRank] = slot;
+      evictableSlots[capacity - 1U - static_cast<uint32_t>(hitCount + hitRank)] = slot;
     }
     asc_syncthreads();
     evictableCount += totals & COUNT_MASK;
     hitCount += totals >> COUNT_SHIFT;
   }
 
-  // 阶段 5：owner 已经是旧 LRU 中最后一个命中位置，直接按桶发布结果。
-  // 同桶只有一个线程写 firstPos，避免重复 resident token 的非确定性覆盖。
-  // 与原版相比，去掉遍历 capacity 后再次 LookupTopkToken 的随机探测。
-  for (uint32_t bucket = thread; bucket < hashCapacity; bucket += PLAN_THREADS) {
-    const int32_t owner = hashOwner[bucket];
-    if (owner >= 0) {
-      const int32_t position = hashFirstPos[bucket];
-      if (position >= 0 && static_cast<uint32_t>(position) < topk) {
-        currentSlots[topkBase + position] = lruSlots[capacityBase + owner];
-      }
-    }
-  }
-  asc_syncthreads();
-
-  // 阶段 6：按 TopK 原顺序压缩 miss 位置。跨 tile 的 carry 累加到 localMissCount。
+  // F: consume per-query bucket before in-place stable compaction.
   int32_t localMissCount = 0;
   for (uint32_t tile = 0U; tile < topk; tile += PLAN_THREADS) {
     const uint32_t position = tile + thread;
     int32_t missFlag = 0;
     if (position < topk) {
-      const int32_t token = topkIndices[topkBase + position];
-      missFlag = IsSourceTokenValid(row, token, visibleSeqLens, tokenToReq, blockTable, maxToken, maxRequests,
-                                    maxNumBlocks, hostNumBlocks, blockSize) &&
-                 currentSlots[topkBase + position] < 0;
+      const uint32_t bucket = static_cast<uint32_t>(missPositions[position]);
+      if (bucket != HASH_BUCKET_INVALID) {
+        const int32_t owner = hashOwner[bucket];
+        if (owner >= 0 && hashFirstPos[bucket] == static_cast<int32_t>(position)) {
+          currentSlots[topkBase + position] = lruSlots[capacityBase + owner];
+        } else {
+          missFlag = 1;
+        }
+      }
     }
     const int32_t rank = BlockExclusiveScan(scanWorkspace, missFlag, thread);
     const int32_t tileMissCount = control[CONTROL_TOTAL];
@@ -393,9 +467,16 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
     } else if (output < static_cast<uint32_t>(evictableCount)) {
       slot = missSlots[topkBase + output - unassignedCount];
     } else {
-      slot = hitSlots[output - evictableCount];
+      slot = evictableSlots[capacity - 1U - (output - static_cast<uint32_t>(evictableCount))];
     }
     lruSlots[capacityBase + output] = slot;
+  }
+  // Preserve the public -1 result for valid misses that could not get a slot.
+  // The preceding assignment barrier makes all successful slot writes visible.
+  for (uint32_t pos = thread; pos < topk; pos += PLAN_THREADS) {
+    if (currentSlots[topkBase + pos] == PENDING_SLOT) {
+      currentSlots[topkBase + pos] = INVALID_TOKEN;
+    }
   }
   if (thread == 0U) {
     missCount[row] = assignCount;

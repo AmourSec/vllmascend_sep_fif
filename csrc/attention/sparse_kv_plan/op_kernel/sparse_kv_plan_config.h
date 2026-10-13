@@ -9,7 +9,7 @@
 
 namespace sparse_kv_plan {
 
-constexpr uint32_t PLAN_THREADS = 2048U;
+constexpr uint32_t PLAN_THREADS = 1024U;
 constexpr uint32_t PLAN_WARP_SIZE = 32U;
 constexpr uint32_t PLAN_WARP_COUNT = PLAN_THREADS / PLAN_WARP_SIZE;
 constexpr uint32_t PLAN_CONTROL_ELEMENTS = 8U;

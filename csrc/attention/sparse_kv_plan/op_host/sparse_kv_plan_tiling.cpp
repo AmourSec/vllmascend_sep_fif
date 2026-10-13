@@ -69,7 +69,7 @@ static ge::graphStatus SparseKvPlanTiling(gert::TilingContext* context) {
   }
 
   const uint64_t hashCapacity = HashCapacity(topk);
-  const uint64_t rowElements = 3U * hashCapacity + 2U * static_cast<uint64_t>(capacity) + static_cast<uint64_t>(topk);
+  const uint64_t rowElements = 3U * hashCapacity + static_cast<uint64_t>(capacity) + static_cast<uint64_t>(topk);
   const uint64_t rowBytes = rowElements * sizeof(int32_t);
   const uint64_t alignedRowBytes = (rowBytes + 31U) & ~static_cast<uint64_t>(31U);
   const uint64_t localBytes = sparse_kv_plan::PLAN_SCAN_BYTES +

@@ -160,7 +160,7 @@
      return ge::GRAPH_SUCCESS;
  }
  
- IMPL_OP_OPTILING(CausalConv1d)
+ IMPL_OP_OPTILING(VllmCausalConv1d)
      .Tiling(CausalConv1dTilingFunc)
      .TilingParse<CausalConv1dCompileInfo>(TilingParseForCausalConv1d);
  

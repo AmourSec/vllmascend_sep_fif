@@ -312,7 +312,7 @@ __aicore__ inline void DispatchKdaGateCumsumBySafeGate(GM_ADDR g, GM_ADDR aLog, 
 }
 } // namespace
 
-extern "C" __global__ __aicore__ void kda_gate_cumsum(GM_ADDR g, GM_ADDR aLog, GM_ADDR dtBias,
+extern "C" __global__ __aicore__ void vllm_kda_gate_cumsum(GM_ADDR g, GM_ADDR aLog, GM_ADDR dtBias,
                                                        GM_ADDR cuSeqlens, GM_ADDR gk, GM_ADDR workspace,
                                                        GM_ADDR tiling)
 {

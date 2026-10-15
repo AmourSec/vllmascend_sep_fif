@@ -5,8 +5,8 @@
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND.
  */
 
-#include "aclnn_kda_gate_cumsum.h"
-#include "kda_gate_cumsum.h"
+#include "aclnn_vllm_kda_gate_cumsum.h"
+#include "vllm_kda_gate_cumsum.h"
 
 #include "acl/acl.h"
 #include "aclnn/aclnn_base.h"
@@ -187,7 +187,7 @@ aclnnStatus KdaGateCheckParams(
 }
 } // namespace
 
-aclnnStatus aclnnKdaGateCumsumGetWorkspaceSize(
+aclnnStatus aclnnVllmKdaGateCumsumGetWorkspaceSize(
     const aclTensor *g,
     const aclTensor *aLogOptional,
     const aclTensor *dtBiasOptional,
@@ -201,7 +201,7 @@ aclnnStatus aclnnKdaGateCumsumGetWorkspaceSize(
     uint64_t *workspaceSize,
     aclOpExecutor **executor)
 {
-    L2_DFX_PHASE_1(aclnnKdaGateCumsum, DFX_IN(g, aLogOptional, dtBiasOptional, cuSeqlensOptional), DFX_OUT(gkOut));
+    L2_DFX_PHASE_1(aclnnVllmKdaGateCumsum, DFX_IN(g, aLogOptional, dtBiasOptional, cuSeqlensOptional), DFX_OUT(gkOut));
     auto uniqueExecutor = CREATE_EXECUTOR();
     CHECK_RET(uniqueExecutor.get() != nullptr, ACLNN_ERR_INNER_CREATE_EXECUTOR);
     auto executorPtr = uniqueExecutor.get();
@@ -212,7 +212,7 @@ aclnnStatus aclnnKdaGateCumsumGetWorkspaceSize(
     CHECK_RET(KdaGateDataContiguous(aLogOptional, executorPtr) == ACLNN_SUCCESS, ACLNN_ERR_PARAM_INVALID);
     CHECK_RET(KdaGateDataContiguous(dtBiasOptional, executorPtr) == ACLNN_SUCCESS, ACLNN_ERR_PARAM_INVALID);
 
-    auto result = l0op::KdaGateCumsum(g, aLogOptional, dtBiasOptional, cuSeqlensOptional, chunkSize,
+    auto result = l0op::VllmKdaGateCumsum(g, aLogOptional, dtBiasOptional, cuSeqlensOptional, chunkSize,
                                       useGateInKernel, safeGate, lowerBound, layout, gkOut, executorPtr);
     CHECK_RET(result[0] != nullptr, ACLNN_ERR_INNER_NULLPTR);
 
@@ -221,9 +221,9 @@ aclnnStatus aclnnKdaGateCumsumGetWorkspaceSize(
     return ACLNN_SUCCESS;
 }
 
-aclnnStatus aclnnKdaGateCumsum(void *workspace, uint64_t workspaceSize, aclOpExecutor *executor, aclrtStream stream)
+aclnnStatus aclnnVllmKdaGateCumsum(void *workspace, uint64_t workspaceSize, aclOpExecutor *executor, aclrtStream stream)
 {
-    L2_DFX_PHASE_2(aclnnKdaGateCumsum);
+    L2_DFX_PHASE_2(aclnnVllmKdaGateCumsum);
     return CommonOpExecutorRun(workspace, workspaceSize, executor, stream);
 }
 

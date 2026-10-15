@@ -50,7 +50,7 @@
 #include "attention/recurrent_gated_delta_rule/recurrent_gated_delta_rule_torch_adpt.h"
 #include "attention/recurrent_kda/recurrent_kda_torch_adpt.h"
 #include "attention/chunk_kda_fwd/chunk_kda_fwd_torch_adpt.h"
-#include "attention/kda_gate_cumsum/kda_gate_cumsum_torch_adpt.h"
+#include "attention/vllm_kda_gate_cumsum/kda_gate_cumsum_torch_adpt.h"
 #include "attention/kda_layout_swap12/kda_layout_swap12_torch_adpt.h"
 #include "attention/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_310_torch_adpt.h"
 #include "attention/k2q_csr/k2q_csr_torch_adpt.h"
@@ -697,7 +697,7 @@ at::Tensor npu_causal_conv1d_custom(
     int64_t  pad_slot_id,
     int64_t  run_mode)
 {
-    EXEC_NPU_CMD(aclnnCausalConv1d,
+    EXEC_NPU_CMD(aclnnVllmCausalConv1d,
                     x,
                     weight,
                     bias_opt,

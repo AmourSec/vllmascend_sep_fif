@@ -129,7 +129,7 @@ ge::graphStatus TilingPrepare4KdaGateCumsum(gert::TilingParseContext *context)
     return ge::GRAPH_SUCCESS;
 }
 
-IMPL_OP_OPTILING(KdaGateCumsum)
+IMPL_OP_OPTILING(VllmKdaGateCumsum)
     .Tiling(Tiling4KdaGateCumsum)
     .TilingParse<KdaGateCumsumCompileInfo>(TilingPrepare4KdaGateCumsum);
 

@@ -62,7 +62,7 @@ at::Tensor kda_gate_cumsum(
     at::Tensor gk = at::empty(g.sizes(), g.options().dtype(at::kFloat));
     char *layout_cstr = const_cast<char *>(layout_str.c_str());
     EXEC_NPU_CMD(
-        aclnnKdaGateCumsum,
+        aclnnVllmKdaGateCumsum,
         g, A_log_tensor, dt_bias_tensor, cu_seqlens,
         chunk_size, use_gate, safe, lower, layout_cstr, gk
     );

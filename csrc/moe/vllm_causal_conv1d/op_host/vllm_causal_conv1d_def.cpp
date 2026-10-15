@@ -17,9 +17,9 @@
 
 namespace ops {
 
-class CausalConv1d : public OpDef {
+class VllmCausalConv1d : public OpDef {
 public:
-    explicit CausalConv1d(const char* name) : OpDef(name)
+    explicit VllmCausalConv1d(const char* name) : OpDef(name)
     {
         this->Input("x")
             .ParamType(REQUIRED)
@@ -85,6 +85,6 @@ public:
         this->AICore().AddConfig("ascend950", aicoreConfig);
     }
 };
-OP_ADD(CausalConv1d);
+OP_ADD(VllmCausalConv1d);
 
 } // namespace ops

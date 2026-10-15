@@ -31,7 +31,7 @@ TILING_DATA_FIELD_DEF(float, lowerBound);
 TILING_DATA_FIELD_DEF(int64_t, usedCoreNum);
 END_TILING_DATA_DEF;
 
-REGISTER_TILING_DATA_CLASS(KdaGateCumsum, KdaGateCumsumTilingData)
+REGISTER_TILING_DATA_CLASS(VllmKdaGateCumsum, KdaGateCumsumTilingData)
 
 struct KdaGateCumsumCompileInfo {};
 } // namespace optiling

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "kernel_operator.h"
-#include "../../kda_gate_cumsum/op_kernel/kda_gate_cumsum_kernel.h"
+#include "../../vllm_kda_gate_cumsum/op_kernel/kda_gate_cumsum_kernel.h"
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
 #include "arch35/chunk_kda_fwd_prepare.h"
 #include "arch35/chunk_kda_fwd_post_wu.h"

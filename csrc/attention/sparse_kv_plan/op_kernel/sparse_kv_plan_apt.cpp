@@ -20,6 +20,8 @@
  * 4. 复用插入所得 bucket，把 resident hit 回填与 miss 压缩融合。
  * 5. hit/evict 共用一个 capacity 数组；请求 ID 改变时走冷路径。
  * 6. 行内循环采用 32 位无符号下标；跨行偏移、地址和 workspace 大小保留 64 位。
+ * 7. 删除 pending 中间写入、miss 输出前缀预清理和 missSlots 回读；owner 安全打包。
+ * 8. 不超过 32 个 warp 时特化二级 scan；保留各 tile 末尾同步。
  *
  * 必须保留的业务语义：
  * - LRU 从旧到新排列，miss 优先使用最老的可淘汰 slot。
@@ -60,10 +62,12 @@ using sparse_kv_plan::PLAN_THREADS;
 using sparse_kv_plan::PLAN_WARP_COUNT;
 using sparse_kv_plan::PLAN_WARP_SIZE;
 constexpr int32_t INVALID_TOKEN = -1;
-constexpr int32_t PENDING_SLOT = -2;
 constexpr int32_t HASH_EMPTY = -1;
 constexpr int32_t HASH_POSITION_EMPTY = INT32_MAX;
 constexpr uint32_t HASH_BUCKET_INVALID = UINT32_MAX;
+constexpr uint32_t OWNER_SLOT_BITS = 16U;
+constexpr int32_t OWNER_SLOT_MASK = (1U << OWNER_SLOT_BITS) - 1U;
+constexpr uint32_t OWNER_PACK_CAPACITY = 1U << (31U - OWNER_SLOT_BITS);
 
 // scan 的动态 UB 布局，单位为 int32。warp 区域均由线程数推导，
 // control 之后的 padding 保证单行 workspace 从 32 字节边界开始。
@@ -109,6 +113,24 @@ __simt_callee__ __aicore__ inline void PublishWarpBases(__ubuf__ int32_t* worksp
   __ubuf__ int32_t* warpBases = workspace + WARP_BASES_OFFSET;
   __ubuf__ int32_t* control = workspace + CONTROL_OFFSET;
   const uint32_t lane = thread;
+  if constexpr (PLAN_WARP_COUNT <= PLAN_WARP_SIZE) {
+    const int32_t value = lane < PLAN_WARP_COUNT ? warpTotals[lane] : 0;
+    int32_t inclusive = value;
+#pragma unroll
+    for (uint32_t offset = 1U; offset < PLAN_WARP_SIZE; offset <<= 1U) {
+      const int32_t prior = asc_shfl_up(inclusive, offset, PLAN_WARP_SIZE);
+      if (lane >= offset) {
+        inclusive += prior;
+      }
+    }
+    if (lane < PLAN_WARP_COUNT) {
+      warpBases[lane] = inclusive - value;
+    }
+    if (lane == PLAN_WARP_SIZE - 1U) {
+      control[CONTROL_TOTAL] = inclusive;
+    }
+    return;
+  }
   int32_t carry = 0;
   for (uint32_t base = 0U; base < PLAN_WARP_COUNT; base += PLAN_WARP_SIZE) {
     const uint32_t index = base + lane;
@@ -239,6 +261,15 @@ __simt_callee__ __aicore__ inline bool IsSourceTokenValid(int64_t row, int32_t t
   return physicalBlock >= 0 && physicalBlock < hostNumBlocks;
 }
 
+__simt_callee__ __aicore__ inline void ClearMissTail(
+    int64_t base, uint32_t assigned, uint32_t topk, uint32_t thread,
+    __gm__ int32_t* missTokens, __gm__ int32_t* missSlots) {
+  for (uint32_t pos = assigned + thread; pos < topk; pos += PLAN_THREADS) {
+    missTokens[base + pos] = INVALID_TOKEN;
+    missSlots[base + pos] = INVALID_TOKEN;
+  }
+}
+
 // Request-ID changes reset the row to identity LRU. Duplicated valid TopK
 // entries intentionally remain independent misses, matching the baseline.
 template <typename ScratchPtr>
@@ -279,6 +310,7 @@ __simt_callee__ __aicore__ inline void ProcessColdRow(
     missTokens[topkBase + miss] = token;
     missSlots[topkBase + miss] = static_cast<int32_t>(miss);
   }
+  ClearMissTail(topkBase, static_cast<uint32_t>(assigned), topk, thread, missTokens, missSlots);
   const uint32_t unused = capacity - static_cast<uint32_t>(assigned);
   for (uint32_t order = thread; order < capacity; order += PLAN_THREADS) {
     lruSlots[capacityBase + order] = static_cast<int32_t>(order < unused ? assigned + order : order - unused);
@@ -322,8 +354,6 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
   // 阶段 1：每个线程以 PLAN_THREADS 为步长初始化输出与 hash，支持任意合法 runtime T/H。
   for (uint32_t pos = thread; pos < topk; pos += PLAN_THREADS) {
     currentSlots[topkBase + pos] = INVALID_TOKEN;
-    missTokens[topkBase + pos] = INVALID_TOKEN;
-    missSlots[topkBase + pos] = INVALID_TOKEN;
   }
   if (thread == 0U) {
     missCount[row] = 0;
@@ -354,7 +384,6 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
     const int32_t token = topkIndices[topkBase + pos];
     if (IsSourceTokenValid(row, token, visibleSeqLens, tokenToReq, blockTable, maxToken, maxRequests, maxNumBlocks,
                            hostNumBlocks, blockSize)) {
-      currentSlots[topkBase + pos] = PENDING_SLOT;
       missPositions[pos] = static_cast<int32_t>(
           InsertTopkToken(hashKeys, hashFirstPos, token, static_cast<int32_t>(pos), hashCapacity));
     } else {
@@ -372,6 +401,7 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
 
   // 阶段 4：按旧 LRU 顺序稳定分类。每个 tile 做一次打包 scan，
   // 同时产生 evictRank 和 hitRank；两者仍分别保持原来的相对顺序。
+  const bool packedOwner = capacity <= OWNER_PACK_CAPACITY;
   int32_t evictableCount = 0;
   int32_t hitCount = 0;
   for (uint32_t tile = 0U; tile < capacity; tile += PLAN_THREADS) {
@@ -394,7 +424,10 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
         }
         if (bucket != HASH_BUCKET_INVALID) {
           hitFlag = 1;
-          asc_atomic_max(hashOwner + bucket, static_cast<int32_t>(order));
+          const int32_t owner = packedOwner
+              ? static_cast<int32_t>((order << OWNER_SLOT_BITS) | static_cast<uint32_t>(slot))
+              : static_cast<int32_t>(order);
+          asc_atomic_max(hashOwner + bucket, owner);
           // 同一 token 占多个 slot 时，旧 LRU 中最后一个 owner 提供命中结果。
         } else {
           evictFlag = 1;
@@ -428,7 +461,8 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
       if (bucket != HASH_BUCKET_INVALID) {
         const int32_t owner = hashOwner[bucket];
         if (owner >= 0 && hashFirstPos[bucket] == static_cast<int32_t>(position)) {
-          currentSlots[topkBase + position] = lruSlots[capacityBase + owner];
+          currentSlots[topkBase + position] =
+              packedOwner ? (owner & OWNER_SLOT_MASK) : lruSlots[capacityBase + owner];
         } else {
           missFlag = 1;
         }
@@ -455,7 +489,7 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
     missTokens[topkBase + miss] = token;
     missSlots[topkBase + miss] = slot;
   }
-  asc_syncthreads();
+  ClearMissTail(topkBase, static_cast<uint32_t>(assignCount), topk, thread, missTokens, missSlots);
 
   // 阶段 8：LRU = 未使用 evictable + 新 miss + 原 hit，顺序与原算子一致。
   const int32_t unassignedCount = evictableCount - assignCount;
@@ -465,18 +499,11 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
     if (output < static_cast<uint32_t>(unassignedCount)) {
       slot = evictableSlots[assignCount + output];
     } else if (output < static_cast<uint32_t>(evictableCount)) {
-      slot = missSlots[topkBase + output - unassignedCount];
+      slot = evictableSlots[output - static_cast<uint32_t>(unassignedCount)];
     } else {
       slot = evictableSlots[capacity - 1U - (output - static_cast<uint32_t>(evictableCount))];
     }
     lruSlots[capacityBase + output] = slot;
-  }
-  // Preserve the public -1 result for valid misses that could not get a slot.
-  // The preceding assignment barrier makes all successful slot writes visible.
-  for (uint32_t pos = thread; pos < topk; pos += PLAN_THREADS) {
-    if (currentSlots[topkBase + pos] == PENDING_SLOT) {
-      currentSlots[topkBase + pos] = INVALID_TOKEN;
-    }
   }
   if (thread == 0U) {
     missCount[row] = assignCount;

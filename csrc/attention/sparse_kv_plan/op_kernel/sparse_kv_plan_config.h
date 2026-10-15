@@ -7,7 +7,7 @@
 
 #include <cstdint>
 
-namespace sparse_kv_plan {
+namespace sparse_kv_plan_config {
 
 constexpr uint32_t PLAN_THREADS = 1024U;
 constexpr uint32_t PLAN_WARP_SIZE = 32U;
@@ -26,6 +26,6 @@ static_assert(PLAN_SCAN_BYTES % 32U == 0U, "Sparse KV Plan scan workspace must b
 static_assert(PLAN_ROW_UB_LIMIT_BYTES % sizeof(int32_t) == 0U, "Sparse KV Plan row UB limit must be int32 aligned");
 static_assert(PLAN_MAX_DYNAMIC_UB_BYTES <= 120U * 1024U, "Sparse KV Plan dynamic UB exceeds the full-DCache budget");
 
-}  // namespace sparse_kv_plan
+}  // namespace sparse_kv_plan_config
 
 #endif

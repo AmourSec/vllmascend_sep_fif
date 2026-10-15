@@ -56,11 +56,11 @@
 
 namespace {
 
-using sparse_kv_plan::PLAN_ROW_UB_LIMIT_ELEMENTS;
-using sparse_kv_plan::PLAN_SCAN_STORAGE_ELEMENTS;
-using sparse_kv_plan::PLAN_THREADS;
-using sparse_kv_plan::PLAN_WARP_COUNT;
-using sparse_kv_plan::PLAN_WARP_SIZE;
+using sparse_kv_plan_config::PLAN_ROW_UB_LIMIT_ELEMENTS;
+using sparse_kv_plan_config::PLAN_SCAN_STORAGE_ELEMENTS;
+using sparse_kv_plan_config::PLAN_THREADS;
+using sparse_kv_plan_config::PLAN_WARP_COUNT;
+using sparse_kv_plan_config::PLAN_WARP_SIZE;
 constexpr int32_t INVALID_TOKEN = -1;
 constexpr int32_t HASH_EMPTY = -1;
 constexpr int32_t HASH_POSITION_EMPTY = INT32_MAX;

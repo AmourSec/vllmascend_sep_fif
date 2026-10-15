@@ -72,8 +72,8 @@ static ge::graphStatus SparseKvPlanTiling(gert::TilingContext* context) {
   const uint64_t rowElements = 3U * hashCapacity + static_cast<uint64_t>(capacity) + static_cast<uint64_t>(topk);
   const uint64_t rowBytes = rowElements * sizeof(int32_t);
   const uint64_t alignedRowBytes = (rowBytes + 31U) & ~static_cast<uint64_t>(31U);
-  const uint64_t localBytes = sparse_kv_plan::PLAN_SCAN_BYTES +
-                              (alignedRowBytes <= sparse_kv_plan::PLAN_ROW_UB_LIMIT_BYTES ? alignedRowBytes : 0U);
+  const uint64_t localBytes = sparse_kv_plan_config::PLAN_SCAN_BYTES +
+                              (alignedRowBytes <= sparse_kv_plan_config::PLAN_ROW_UB_LIMIT_BYTES ? alignedRowBytes : 0U);
   if (localBytes > std::numeric_limits<uint32_t>::max()) {
     return Fail(context, "SparseKvPlan local memory size overflow");
   }

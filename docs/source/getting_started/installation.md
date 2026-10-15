@@ -2,6 +2,11 @@
 
 This document describes how to install vllm-ascend manually.
 
+For this fork's SIMTv3 A5 / CANN 9.2 candidate environment with vLLM 0.28,
+see the [dependency audit](../developer_guide/simtv3_dependency_audit.md).
+Its offline build/import checks and remaining device-runtime validation are
+recorded separately from the release compatibility matrix below.
+
 ## Requirements {: #installation-requirements }
 
 ### Environment requirements {: #installation-environment-requirements }

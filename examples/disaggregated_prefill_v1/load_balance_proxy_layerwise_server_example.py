@@ -17,7 +17,7 @@
 # Prerequisites:
 # - Python 3.8+
 # - Install dependencies:
-#     pip install fastapi<0.124.0 httpx uvicorn vllm
+#     pip install 'fastapi>=0.133.0,<0.137.0' 'starlette>=1.0.1' httpx uvicorn vllm
 #
 # Step 1: Start Your Backend Servers
 # ----------------------------------

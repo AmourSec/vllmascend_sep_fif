@@ -53,7 +53,7 @@ OpenAI-compatible requests across them. It can run in two modes:
 - Install dependencies:
 
   ```bash
-  pip install "fastapi<0.124.0" httpx uvicorn
+  pip install "fastapi>=0.133.0,<0.137.0" "starlette>=1.0.1" httpx uvicorn
   ```
 
 ## Step 1: Start Your Backend Servers

@@ -514,7 +514,9 @@ setup(
     install_requires=get_requirements(),
     ext_modules=ext_modules,
     cmdclass=cmdclass,
-    extras_require={},
+    # MemcacheConnector is a separate backend from the MemFabric SIMT PD path.
+    # Keep its existing version contract when the backend is explicitly selected.
+    extras_require={"memcache": ["memcache_hybrid==1.2.0"]},
     entry_points={
         "vllm.platform_plugins": ["ascend = vllm_ascend:register"],
         "vllm.general_plugins": [

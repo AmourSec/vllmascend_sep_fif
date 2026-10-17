@@ -87,6 +87,7 @@ at::Tensor npu_lightning_indexer_quant(
     const c10::optional<at::Tensor> no_prefetch_tensor = c10::nullopt;
     const int64_t no_prefetch_bytes = 0;
     const int64_t no_prefetch_budget = 0;
+    double default_ema_decay = 0.5;
 
     // convert str
     char *query_layout_ptr = const_cast<char *>(query_layout_str.c_str());
@@ -111,7 +112,7 @@ at::Tensor npu_lightning_indexer_quant(
                     sparse_mode,
                     no_prefetch_bytes,
                     no_prefetch_budget,
-                    0.5,
+                    default_ema_decay,
                     lightning_indexer_quant_output,
                     gathered_kv,
                     prefetch_indices,

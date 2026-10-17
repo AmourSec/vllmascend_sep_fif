@@ -15,6 +15,9 @@
 
 #include "lightning_indexer_quant_tiling.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "../op_kernel/lightning_indexer_quant_template_tiling_key.h"
 
 using namespace ge;
@@ -104,7 +107,8 @@ ge::graphStatus LIQInfoParser::GetNpuInfo()
 
     socVersion_ = ascendcPlatform.GetSocVersion();
     if ((socVersion_ != platform_ascendc::SocVersion::ASCEND910B) &&
-        (socVersion_ != platform_ascendc::SocVersion::ASCEND910_93)) {
+        (socVersion_ != platform_ascendc::SocVersion::ASCEND910_93) &&
+        (socVersion_ != platform_ascendc::SocVersion::ASCEND950)) {
         OPS_LOG_E(opName_, "SOC Version[%d] is not support.", (int32_t)socVersion_);
         return GRAPH_FAILED;
     }
@@ -125,6 +129,10 @@ void LIQInfoParser::GetOptionalInputParaInfo()
     opParamInfo_.actualSeqLengthsK.desc = context_->GetOptionalInputDesc(ACTUAL_SEQ_K_INDEX);
     opParamInfo_.blockTable.tensor = context_->GetOptionalInputTensor(BLOCK_TABLE_INDEX);
     opParamInfo_.blockTable.desc = context_->GetOptionalInputDesc(BLOCK_TABLE_INDEX);
+    opParamInfo_.kvAddresses.tensor = context_->GetOptionalInputTensor(KV_ADDRESSES_INDEX);
+    opParamInfo_.kvAddresses.desc = context_->GetOptionalInputDesc(KV_ADDRESSES_INDEX);
+    opParamInfo_.prefetchThreshold.tensor = context_->GetOptionalInputTensor(PREFETCH_THRESHOLD_INDEX);
+    opParamInfo_.prefetchThreshold.desc = context_->GetOptionalInputDesc(PREFETCH_THRESHOLD_INDEX);
 }
 
 void LIQInfoParser::GetInputParaInfo()
@@ -164,6 +172,9 @@ ge::graphStatus LIQInfoParser::GetAttrParaInfo()
     opParamInfo_.layOutKey = attrs->GetStr(ATTR_KEY_LAYOUT_INDEX);
     opParamInfo_.sparseCount = attrs->GetAttrPointer<int32_t>(ATTR_SPARSE_COUNT_INDEX);
     opParamInfo_.sparseMode = attrs->GetAttrPointer<int32_t>(ATTR_SPARSE_MODE_INDEX);
+    opParamInfo_.kvRowBytes = attrs->GetAttrPointer<int32_t>(ATTR_KV_ROW_BYTES_INDEX);
+    opParamInfo_.prefetchBudget = attrs->GetAttrPointer<int32_t>(ATTR_PREFETCH_BUDGET_INDEX);
+    opParamInfo_.emaDecay = attrs->GetAttrPointer<float>(ATTR_EMA_DECAY_INDEX);
 
     if (opParamInfo_.layOutQuery != nullptr) {
         OPS_LOG_I(context_->GetNodeName(), "layout_query is:%s", opParamInfo_.layOutQuery);
@@ -215,6 +226,24 @@ ge::graphStatus LIQInfoParser::CheckAttrParaInfo()
 
     OPS_ERR_IF(*opParamInfo_.keyQuantMode != 0, OPS_LOG_E(opName_, "input attr key_quant_mode only supported 0."),
                return ge::GRAPH_FAILED);
+
+    const bool prefetch = opParamInfo_.kvAddresses.tensor != nullptr || opParamInfo_.prefetchThreshold.tensor != nullptr;
+    OPS_ERR_IF(prefetch && socVersion_ != platform_ascendc::SocVersion::ASCEND950,
+               OPS_LOG_E(opName_, "prefetch mode only supports ASCEND950."), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(prefetch && (opParamInfo_.kvAddresses.tensor == nullptr || opParamInfo_.prefetchThreshold.tensor == nullptr),
+               OPS_LOG_E(opName_, "kv_addresses and prefetch_threshold must be provided together."), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(prefetch && (opParamInfo_.kvRowBytes == nullptr || opParamInfo_.prefetchBudget == nullptr ||
+                            opParamInfo_.emaDecay == nullptr),
+               OPS_LOG_E(opName_, "prefetch attributes are missing."), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(!prefetch && ((opParamInfo_.kvRowBytes != nullptr && *opParamInfo_.kvRowBytes != 0) ||
+                             (opParamInfo_.prefetchBudget != nullptr && *opParamInfo_.prefetchBudget != 0)),
+               OPS_LOG_E(opName_, "legacy mode requires kv_row_bytes and prefetch_budget to be zero."), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(prefetch && (*opParamInfo_.kvRowBytes < 1 || *opParamInfo_.kvRowBytes > 4096),
+               OPS_LOG_E(opName_, "kv_row_bytes must be in [1,4096]."), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(prefetch && (*opParamInfo_.prefetchBudget < 0 || *opParamInfo_.prefetchBudget > 2048),
+               OPS_LOG_E(opName_, "prefetch_budget must be in [0,2048]."), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(prefetch && (!std::isfinite(*opParamInfo_.emaDecay) || *opParamInfo_.emaDecay < 0.0F || *opParamInfo_.emaDecay >= 1.0F),
+               OPS_LOG_E(opName_, "ema_decay must be finite and in [0,1)."), return ge::GRAPH_FAILED);
 
     return ge::GRAPH_SUCCESS;
 }
@@ -328,6 +357,18 @@ ge::graphStatus LIQInfoParser::GetAndCheckOptionalInput()
                    opParamInfo_.actualSeqLengthsQ.desc->GetDataType() != ge::DT_INT32,
                OPS_LOG_E(opName_, "input actual_seq_lengths_query data type only support int32"),
                return ge::GRAPH_FAILED);
+
+    const bool prefetch = opParamInfo_.kvAddresses.tensor != nullptr || opParamInfo_.prefetchThreshold.tensor != nullptr;
+    if (prefetch) {
+        OPS_ERR_IF(opParamInfo_.kvAddresses.desc == nullptr || opParamInfo_.prefetchThreshold.desc == nullptr,
+                   OPS_LOG_E(opName_, "prefetch input descriptors must be present."), return ge::GRAPH_FAILED);
+        OPS_ERR_IF(opParamInfo_.kvAddresses.desc->GetDataType() != ge::DT_INT64 ||
+                       opParamInfo_.prefetchThreshold.desc->GetDataType() != ge::DT_FLOAT,
+                   OPS_LOG_E(opName_, "prefetch input data types are invalid."), return ge::GRAPH_FAILED);
+        OPS_ERR_IF(opParamInfo_.kvAddresses.tensor->GetStorageShape().GetDimNum() != DIM_NUM_TWO ||
+                       opParamInfo_.prefetchThreshold.tensor->GetStorageShape().GetDimNum() != 1,
+                   OPS_LOG_E(opName_, "prefetch input ranks are invalid."), return ge::GRAPH_FAILED);
+    }
 
     return ge::GRAPH_SUCCESS;
 }
@@ -544,6 +585,16 @@ ge::graphStatus LIQInfoParser::ValidateInputShapesMatch()
     uint32_t queryWeightsN1Dim = 1;
     uint32_t outN2Dim = 1;
 
+    const bool prefetch = opParamInfo_.kvAddresses.tensor != nullptr;
+    if (prefetch) {
+        OPS_ERR_IF(opParamInfo_.prefetchThreshold.tensor->GetShapeSize() != bSize_ ||
+                       opParamInfo_.kvAddresses.tensor->GetStorageShape().GetDim(0) != bSize_ ||
+                       opParamInfo_.kvAddresses.tensor->GetStorageShape().GetDim(1) !=
+                           opParamInfo_.blockTable.tensor->GetStorageShape().GetDim(1) * blockSize_,
+                   OPS_LOG_E(opName_, "prefetch inputs do not match batch or block table capacity."),
+                   return ge::GRAPH_FAILED);
+    }
+
     if (qLayout_ == DataLayout::TND) {
         // -----------------------check BatchSize-------------------
         // bSize_ 来源于act_seq_q
@@ -699,10 +750,17 @@ void LIQInfoParser::GenerateInfo(LIQTilingInfo &liqInfo)
 
     liqInfo.blockSize = blockSize_;
     liqInfo.maxBlockNumPerBatch = maxBlockNumPerBatch_;
+    liqInfo.keyBlockCount = (kLayout_ == DataLayout::PA_BSND)
+                                ? static_cast<uint32_t>(opParamInfo_.key.shape->GetStorageShape().GetDim(0))
+                                : 0;
 
     liqInfo.pageAttentionFlag = (kLayout_ == DataLayout::PA_BSND);
     liqInfo.sparseMode = *opParamInfo_.sparseMode;
     liqInfo.sparseCount = *opParamInfo_.sparseCount;
+    liqInfo.kvRowBytes = opParamInfo_.kvRowBytes == nullptr ? 0U : static_cast<uint32_t>(*opParamInfo_.kvRowBytes);
+    liqInfo.prefetchBudget = opParamInfo_.prefetchBudget == nullptr ? 0U : static_cast<uint32_t>(*opParamInfo_.prefetchBudget);
+    liqInfo.emaDecay = opParamInfo_.emaDecay == nullptr ? 0.5F : *opParamInfo_.emaDecay;
+    liqInfo.isArch35 = socVersion_ == platform_ascendc::SocVersion::ASCEND950;
 
     liqInfo.inputQLayout = qLayout_;
     liqInfo.inputKLayout = kLayout_;
@@ -733,6 +791,22 @@ ge::graphStatus LIQInfoParser::ParseAndCheck(LIQTilingInfo &liqInfo)
         return ge::GRAPH_FAILED;
     }
 
+    OPS_ERR_IF(bSize_ == 0 || maxBlockNumPerBatch_ == 0 ||
+                   (kLayout_ == DataLayout::PA_BSND && opParamInfo_.key.shape->GetStorageShape().GetDim(0) == 0),
+               OPS_LOG_E(opName_, "batch, block table capacity and physical block count must be nonzero."),
+               return ge::GRAPH_FAILED);
+
+    if (socVersion_ == platform_ascendc::SocVersion::ASCEND950 && opParamInfo_.kvAddresses.tensor == nullptr) {
+        OPS_LOG_E(opName_, "ASCEND950 requires prefetch inputs.");
+        return ge::GRAPH_FAILED;
+    }
+    if (opParamInfo_.kvAddresses.tensor != nullptr) {
+        OPS_ERR_IF(qLayout_ != DataLayout::TND || kLayout_ != DataLayout::PA_BSND ||
+                       bSize_ != opParamInfo_.query.shape->GetStorageShape().GetDim(0),
+                   OPS_LOG_E(opName_, "prefetch mode requires TND/PA_BSND and one query per request."),
+                   return ge::GRAPH_FAILED);
+    }
+
     GenerateInfo(liqInfo);
 
     return ge::GRAPH_SUCCESS;
@@ -752,6 +826,9 @@ ge::graphStatus LightningIndexerQuantTiling::DoTiling(LIQTilingInfo *tilingInfo)
     uint32_t aivNum = ascendcPlatform.GetCoreNumAiv();
     uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
     uint32_t blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, aicNum, aivNum);
+    if (tilingInfo->isArch35) {
+        blockDim = std::min(tilingInfo->bSize, aicNum);
+    }
     context_->SetBlockDim(blockDim);
 
     // -------------set workspacesize-----------------
@@ -766,15 +843,18 @@ ge::graphStatus LightningIndexerQuantTiling::DoTiling(LIQTilingInfo *tilingInfo)
     constexpr uint32_t V1_DECODE_DATA_NUM = 2;         // Decode每个核需要存储头和尾部两块数据
     constexpr uint32_t S1_BASE_SIZE = 8;               // S1轴基本块的大小
     constexpr uint32_t TOPK_MAX_SIZE = 2048;           // TopK选取个数
-    uint32_t workspaceSize = ascendcPlatform.GetLibApiWorkSpaceSize();
-    // 主流程需Workspace大小
-    uint32_t mm1ResSize = M_BASE_SIZE * S2_BASE_SIZE;
-    workspaceSize += mm1ResSize * MM1_RES_ELEM_SIZE * DOUBLE_BUFFER * aicNum;
-    // Decode流程(LD)需要Workspace大小
-    // 临时存储Decode中间结果大小: 2(头/尾)*8(s1Base)*2(idx/value)*2048(K)*sizeof(int32)*24=6M
-    workspaceSize += V1_DECODE_DATA_NUM * S1_BASE_SIZE * V1_RES_ELEM_TYPE * TOPK_MAX_SIZE * V1_RES_ELEM_SIZE * aicNum;
-    // 临时存储Decode中间参数信息大小: 2(头/尾)*8(s1Base)*16(paramNum)*sizeof(int64_t)*24=48k
-    workspaceSize += V1_DECODE_DATA_NUM * S1_BASE_SIZE * V1_DECODE_PARAM_NUM * V1_DECODE_PARAM_ELEM_SIZE * aicNum;
+    size_t workspaceSize = ascendcPlatform.GetLibApiWorkSpaceSize();
+    if (tilingInfo->isArch35) {
+        const size_t stageStride = (static_cast<size_t>(tilingInfo->kvRowBytes) + 31U) & ~31U;
+        const size_t perRequest = std::max<size_t>(1U, tilingInfo->prefetchBudget) * stageStride;
+        const size_t staging = static_cast<size_t>(tilingInfo->bSize) * ((perRequest + 511U) & ~511U);
+        workspaceSize += staging + 512U;
+    } else {
+        const uint32_t mm1ResSize = M_BASE_SIZE * S2_BASE_SIZE;
+        workspaceSize += mm1ResSize * MM1_RES_ELEM_SIZE * DOUBLE_BUFFER * aicNum;
+        workspaceSize += V1_DECODE_DATA_NUM * S1_BASE_SIZE * V1_RES_ELEM_TYPE * TOPK_MAX_SIZE * V1_RES_ELEM_SIZE * aicNum;
+        workspaceSize += V1_DECODE_DATA_NUM * S1_BASE_SIZE * V1_DECODE_PARAM_NUM * V1_DECODE_PARAM_ELEM_SIZE * aicNum;
+    }
     size_t *workSpaces = context_->GetWorkspaceSizes(1);
     workSpaces[0] = workspaceSize;
 
@@ -787,6 +867,11 @@ ge::graphStatus LightningIndexerQuantTiling::DoTiling(LIQTilingInfo *tilingInfo)
     tilingData_.set_blockSize(tilingInfo->blockSize);
     tilingData_.set_maxBlockNumPerBatch(tilingInfo->maxBlockNumPerBatch);
     tilingData_.set_sparseMode(tilingInfo->sparseMode);
+    tilingData_.set_kvRowBytes(tilingInfo->kvRowBytes);
+    tilingData_.set_prefetchBudget(tilingInfo->prefetchBudget);
+    tilingData_.set_emaDecay(tilingInfo->emaDecay);
+    tilingData_.set_isArch35(tilingInfo->isArch35 ? 1U : 0U);
+    tilingData_.set_keyBlockCount(tilingInfo->keyBlockCount);
     tilingData_.set_usedCoreNum(blockDim);
     tilingData_.SaveToBuffer(context_->GetRawTilingData()->GetData(), context_->GetRawTilingData()->GetCapacity());
     context_->GetRawTilingData()->SetDataSize(tilingData_.GetDataSize());

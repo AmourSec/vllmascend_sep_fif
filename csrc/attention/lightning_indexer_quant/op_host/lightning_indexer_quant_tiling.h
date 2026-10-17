@@ -52,7 +52,13 @@ constexpr uint32_t KEY_DEQUANT_SCALE_INDEX = 4;
 constexpr uint32_t ACTUAL_SEQ_Q_INDEX = 5;
 constexpr uint32_t ACTUAL_SEQ_K_INDEX = 6;
 constexpr uint32_t BLOCK_TABLE_INDEX = 7;
+constexpr uint32_t KV_ADDRESSES_INDEX = 8;
+constexpr uint32_t PREFETCH_THRESHOLD_INDEX = 9;
 constexpr uint32_t LIGHTNING_INDEXER_QUANT = 0;
+constexpr uint32_t GATHERED_KV_INDEX = 1;
+constexpr uint32_t PREFETCH_INDICES_INDEX = 2;
+constexpr uint32_t PREFETCH_STATS_INDEX = 3;
+constexpr uint32_t NEXT_THRESHOLD_INDEX = 4;
 // Attributes Index
 constexpr uint32_t ATTR_QUERY_QUANT_MODE_INDEX = 0;
 constexpr uint32_t ATTR_KEY_QUANT_MODE_INDEX = 1;
@@ -60,6 +66,9 @@ constexpr uint32_t ATTR_QUERY_LAYOUT_INDEX = 2;
 constexpr uint32_t ATTR_KEY_LAYOUT_INDEX = 3;
 constexpr uint32_t ATTR_SPARSE_COUNT_INDEX = 4;
 constexpr uint32_t ATTR_SPARSE_MODE_INDEX = 5;
+constexpr uint32_t ATTR_KV_ROW_BYTES_INDEX = 6;
+constexpr uint32_t ATTR_PREFETCH_BUDGET_INDEX = 7;
+constexpr uint32_t ATTR_EMA_DECAY_INDEX = 8;
 // Dim Index
 constexpr uint32_t DIM_IDX_ZERO = 0;
 constexpr uint32_t DIM_IDX_ONE = 1;
@@ -89,6 +98,11 @@ TILING_DATA_FIELD_DEF(uint32_t, usedCoreNum)
 TILING_DATA_FIELD_DEF(uint32_t, blockSize)
 TILING_DATA_FIELD_DEF(uint32_t, maxBlockNumPerBatch)
 TILING_DATA_FIELD_DEF(uint32_t, sparseMode)
+TILING_DATA_FIELD_DEF(uint32_t, kvRowBytes)
+TILING_DATA_FIELD_DEF(uint32_t, prefetchBudget)
+TILING_DATA_FIELD_DEF(float, emaDecay)
+TILING_DATA_FIELD_DEF(uint32_t, isArch35)
+TILING_DATA_FIELD_DEF(uint32_t, keyBlockCount)
 END_TILING_DATA_DEF
 REGISTER_TILING_DATA_CLASS(LightningIndexerQuant, LIQTilingData)
 
@@ -105,6 +119,8 @@ struct LIQParaInfo {
     TilingOptionalParaInfo actualSeqLengthsQ = {nullptr, nullptr};
     TilingOptionalParaInfo actualSeqLengthsK = {nullptr, nullptr};
     TilingOptionalParaInfo blockTable = {nullptr, nullptr};
+    TilingOptionalParaInfo kvAddresses = {nullptr, nullptr};
+    TilingOptionalParaInfo prefetchThreshold = {nullptr, nullptr};
     TilingRequiredParaInfo attenOut = {nullptr, nullptr};
 
     const int32_t *queryQuantMode = nullptr;
@@ -114,6 +130,9 @@ struct LIQParaInfo {
     const int32_t *blockSize = nullptr;
     const int32_t *sparseMode = nullptr;
     const int32_t *sparseCount = nullptr;
+    const int32_t *kvRowBytes = nullptr;
+    const int32_t *prefetchBudget = nullptr;
+    const float *emaDecay = nullptr;
 };
 
 // -----------算子Tiling入参信息类---------------
@@ -135,10 +154,15 @@ public:
     bool pageAttentionFlag = false;
     int32_t blockSize = 0;
     uint32_t maxBlockNumPerBatch = 0;
+    uint32_t keyBlockCount = 0;
     // Mask
     int32_t sparseMode = 0;
     // Others Flag
     uint32_t sparseCount = 0;
+    uint32_t kvRowBytes = 0;
+    uint32_t prefetchBudget = 0;
+    float emaDecay = 0.5F;
+    bool isArch35 = false;
     // DType
     ge::DataType inputQType = ge::DT_FLOAT16;
     ge::DataType inputKType = ge::DT_FLOAT16;

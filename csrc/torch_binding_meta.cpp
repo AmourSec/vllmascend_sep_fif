@@ -1574,6 +1574,33 @@ at::Tensor npu_lightning_indexer_quant_meta(
     return lightning_indexer_quant_output;
 }
 
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+npu_lightning_indexer_quant_prefetch_meta(
+    const at::Tensor &query, const at::Tensor &key, const at::Tensor &weights,
+    const at::Tensor &query_dequant_scale, const at::Tensor &key_dequant_scale,
+    const at::Tensor &actual_seq_lengths_query, const at::Tensor &actual_seq_lengths_key,
+    const at::Tensor &block_table, const at::Tensor &kv_addresses,
+    const at::Tensor &prefetch_threshold, int64_t kv_row_bytes, int64_t prefetch_budget,
+    int64_t sparse_count, double ema_decay)
+{
+    (void)key;
+    (void)weights;
+    (void)query_dequant_scale;
+    (void)key_dequant_scale;
+    (void)actual_seq_lengths_query;
+    (void)actual_seq_lengths_key;
+    (void)kv_addresses;
+    (void)prefetch_threshold;
+    (void)ema_decay;
+    const c10::SymInt batch = query.sym_size(0);
+    at::Tensor sparse_indices = at::empty_symint({batch, c10::SymInt(1), c10::SymInt(sparse_count)}, query.options().dtype(at::kInt));
+    at::Tensor gathered_kv = at::empty_symint({batch, c10::SymInt(sparse_count), c10::SymInt(std::max<int64_t>(1, kv_row_bytes))}, query.options().dtype(at::kByte));
+    at::Tensor prefetch_indices = at::empty_symint({batch, c10::SymInt(std::max<int64_t>(1, prefetch_budget))}, query.options().dtype(at::kInt));
+    at::Tensor prefetch_stats = at::empty_symint({batch, c10::SymInt(2)}, query.options().dtype(at::kInt));
+    at::Tensor next_threshold = at::empty_symint({batch}, query.options().dtype(at::kFloat));
+    return {sparse_indices, gathered_kv, prefetch_indices, prefetch_stats, next_threshold};
+}
+
 std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_k2q_csr_meta(
     const at::Tensor &q2k,
     const at::Tensor &cu_seqlens,
@@ -2236,6 +2263,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_scatter_nd_update_sk", &vllm_ascend::meta::npu_scatter_nd_update_sk_meta);
     // Lightning indexer quant
     ops.impl("npu_lightning_indexer_quant", &vllm_ascend::meta::npu_lightning_indexer_quant_meta);
+    ops.impl("npu_lightning_indexer_quant_prefetch",
+             &vllm_ascend::meta::npu_lightning_indexer_quant_prefetch_meta);
     // MLA prolog (MlaPrologV3), Ascend950-only; name aligned with torch_npu
     ops.impl("npu_mla_prolog_v3", &vllm_ascend::meta::npu_mla_prolog_v3_meta);
     // chunk_gated_delta_rule_fwd_h

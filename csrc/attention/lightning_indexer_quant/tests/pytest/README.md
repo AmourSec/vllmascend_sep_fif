@@ -84,9 +84,25 @@ the custom OPP package, including its operator prototype library; rebuilding
 only the Torch extension cannot update that prototype. Rerun pytest in a new
 Python process after installation.
 
-To diagnose only the kernel build, run `bash build.sh --pkg --soc=ascend950
---ops=lightning_indexer_quant -j32` from `csrc/`; its installer is emitted under
-`csrc/build/`. This diagnostic alone does not rebuild the Torch binding.
+The extension's `build_aclnn.sh` now removes `csrc/build` before building the
+OPP package. The kernel source-copy and compile `.done` files do not track all
+source/header changes, so retaining that directory can repackage old kernels.
+This makes OPP rebuilds slower, but prevents mixing new host libraries with old
+generated metadata or device binaries. The `op_build` generation commands also
+depend on their host libraries so an OpDef change regenerates ACLNN sources.
+That dependency fix alone does not make the entire kernel build incremental.
+
+To diagnose only the kernel build, start from a clean build directory:
+
+```bash
+cd csrc
+rm -rf -- build output build_out
+bash build.sh --pkg --soc=ascend950 --ops=lightning_indexer_quant -j32
+```
+
+Its installer is emitted under `csrc/build/`. This diagnostic alone does not
+install the OPP package or rebuild the Torch binding; use the editable-install
+command above for the complete build and install.
 
 Run the local test package directly so the repository's broad conftest files
 are not discovered:
@@ -117,6 +133,34 @@ exact binary fractions for INT8 and exact integers for FP8, checked directly
 and against the NumPy oracle. Failures include the full actual/expected score
 vectors. Attach this log and the commit ID along with the failing random case
 when reporting a numeric regression. These tests can also run with `--source=host`.
+
+If the 32-head case returns pairwise sums of the expected head scores while
+the 64-head case passes, check for an old 64-head kernel before changing the
+score calculation. Reading a `[B,32]` weight tensor with a 64-element request
+stride combines requests 0/1, 2/3, etc., and then reads beyond the tensor.
+Before cleaning, preserve the build log and compare the copied kernel source
+with the checked-out source from the repository root:
+
+```bash
+git rev-parse HEAD
+find csrc/build -name lightning_indexer_quant_kernel_arch35.h \
+  -exec grep -nE 'batch \*|actMBaseSize|ComputeScores' {} +
+grep -nE 'batch \*|actMBaseSize|ComputeScores' \
+  csrc/attention/lightning_indexer_quant/op_kernel/arch35/lightning_indexer_quant_kernel_arch35.h
+```
+
+Current code uses `t_->gSize` for request strides and head counts. A copied
+header with `batch * 64` is stale. Kernel compilation uses the copy under
+`csrc/build/binary/ascend950/src/`; finding a current header under
+`csrc/build/_CPack_Packages/` does not prove that the compiled kernel is current.
+For FP8 `EZ1009`, also preserve the generated
+`csrc/build/autogen/aclnn_lightning_indexer_quant.cpp` and
+`csrc/build/autogen/aic-ascend950-ops-info.ini`; inspect the
+`LightningIndexerQuant` support entries for FP8 Q/K and FP32 weights/scales.
+If a clean build still fails, provide those files, the complete build log, the
+individual pytest failure, and the loaded OPP library paths from the same
+failing Python process. Source revision alone does not identify the loaded
+operator binary.
 
 `--source=hbm` is the default and uses device-resident KV rows. It is the only
 source exercised by the default test fixture. The event-timing smoke benchmark

@@ -672,6 +672,7 @@ if (BUILD_OPEN_PROJECT)
                 ${OP_BUILD_TOOL}
                 $<TARGET_FILE:op_host_aclnn>
                 ${base_aclnn_binary_dir}
+                DEPENDS op_host_aclnn
         )
     endif ()
 
@@ -689,6 +690,7 @@ if (BUILD_OPEN_PROJECT)
                 ${OP_BUILD_TOOL}
                 $<TARGET_FILE:op_host_aclnnInner>
                 ${base_aclnn_binary_dir}/inner
+                DEPENDS op_host_aclnnInner
         )
     endif ()
 
@@ -706,6 +708,7 @@ if (BUILD_OPEN_PROJECT)
                 ${OP_BUILD_TOOL}
                 $<TARGET_FILE:op_host_aclnnExc>
                 ${base_aclnn_binary_dir}/exc
+                DEPENDS op_host_aclnnExc
         )
     endif ()
 

@@ -1387,7 +1387,10 @@ function set_compute_unit_option() {
       for support_unit in "${SUPPORT_COMPUTE_UNIT_SHORT[@]}"; do
         lowercase_word=$(echo "$soc" | tr '[:upper:]' '[:lower:]')
         if [[ "$lowercase_word" == *"$support_unit"* ]]; then
-          COMPUTE_UNIT_SHORT="$COMPUTE_UNIT_SHORT$support_unit;"
+          if [ -n "$COMPUTE_UNIT_SHORT" ]; then
+            COMPUTE_UNIT_SHORT="$COMPUTE_UNIT_SHORT;"
+          fi
+          COMPUTE_UNIT_SHORT="$COMPUTE_UNIT_SHORT$support_unit"
           break
         fi
       done

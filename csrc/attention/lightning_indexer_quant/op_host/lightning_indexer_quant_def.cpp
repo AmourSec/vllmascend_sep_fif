@@ -23,59 +23,59 @@ public:
     {
         this->Input("query")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_INT8})
-            .Format({ge::FORMAT_ND})
+            .DataType({ge::DT_INT8, ge::DT_FLOAT8_E4M3FN})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("key")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_INT8})
-            .Format({ge::FORMAT_ND})
+            .DataType({ge::DT_INT8, ge::DT_FLOAT8_E4M3FN})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("weights")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_FLOAT16})
-            .Format({ge::FORMAT_ND})
+            .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("query_dequant_scale")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_FLOAT16})
-            .Format({ge::FORMAT_ND})
+            .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("key_dequant_scale")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_FLOAT16})
-            .Format({ge::FORMAT_ND})
+            .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("actual_seq_lengths_query")
             .ParamType(OPTIONAL)
-            .DataType({ge::DT_INT32})
-            .Format({ge::FORMAT_ND})
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("actual_seq_lengths_key")
             .ParamType(OPTIONAL)
-            .DataType({ge::DT_INT32})
-            .Format({ge::FORMAT_ND})
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("block_table")
             .ParamType(OPTIONAL)
-            .DataType({ge::DT_INT32})
-            .Format({ge::FORMAT_ND})
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("kv_addresses")
             .ParamType(OPTIONAL)
-            .DataType({ge::DT_INT64})
-            .Format({ge::FORMAT_ND})
+            .DataTypeList({ge::DT_INT64})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         this->Input("prefetch_threshold")
             .ParamType(OPTIONAL)
-            .DataType({ge::DT_FLOAT})
-            .Format({ge::FORMAT_ND})
+            .DataTypeList({ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
-        this->Output("sparse_indices").ParamType(REQUIRED).DataType({ge::DT_INT32}).Format({ge::FORMAT_ND});
-        this->Output("gathered_kv").ParamType(REQUIRED).DataType({ge::DT_UINT8}).Format({ge::FORMAT_ND});
-        this->Output("prefetch_indices").ParamType(REQUIRED).DataType({ge::DT_INT32}).Format({ge::FORMAT_ND});
-        this->Output("prefetch_stats").ParamType(REQUIRED).DataType({ge::DT_INT32}).Format({ge::FORMAT_ND});
-        this->Output("next_threshold").ParamType(REQUIRED).DataType({ge::DT_FLOAT}).Format({ge::FORMAT_ND});
+        this->Output("sparse_indices").ParamType(REQUIRED).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND});
+        this->Output("gathered_kv").ParamType(REQUIRED).DataTypeList({ge::DT_UINT8}).FormatList({ge::FORMAT_ND});
+        this->Output("prefetch_indices").ParamType(REQUIRED).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND});
+        this->Output("prefetch_stats").ParamType(REQUIRED).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND});
+        this->Output("next_threshold").ParamType(REQUIRED).DataTypeList({ge::DT_FLOAT}).FormatList({ge::FORMAT_ND});
         this->Attr("query_quant_mode").AttrType(REQUIRED).Int(0);  // 0: 默认值，per-token-head
         this->Attr("key_quant_mode").AttrType(REQUIRED).Int(0);    // 0: 默认值，per-token-head
         this->Attr("layout_query").AttrType(OPTIONAL).String("BSND");
@@ -86,6 +86,31 @@ public:
         this->Attr("prefetch_budget").AttrType(OPTIONAL).Int(0);
         this->Attr("ema_decay").AttrType(OPTIONAL).Float(0.5);
         OpAICoreConfig aicore_config;
+        aicore_config.Input("query")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_INT8})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config.Input("key")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_INT8})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config.Input("weights")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT16})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config.Input("query_dequant_scale")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT16})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config.Input("key_dequant_scale")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT16})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
         aicore_config.DynamicCompileStaticFlag(true)
             .DynamicFormatFlag(true)
             .DynamicRankSupportFlag(true)

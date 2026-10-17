@@ -184,10 +184,33 @@ It discovers CANN includes from `ASCEND_HOME_PATH`, `ASCEND_TOOLKIT_HOME`, or th
 standard toolkit location. Use `--cann-template-include=/path/to/include` to
 select another include root. Without a host C++ compiler or the CANN header,
 these three checks are skipped; they never substitute a mock template header.
-Passing them does not prove that the NPU binary contains the variants. After
-rebuilding OPP, search the generated JSON under
-`csrc/build/binary/ascend950/bin/lightning_indexer_quant` for `50537508`, then
-rerun the FP8 scores cases.
+Passing them does not prove that the NPU binary contains the variants.
+The Ascend 950 `build_aclnn.sh` now checks generated kernel metadata before
+installation and checks the installed metadata again afterwards. Missing FP8
+metadata, a missing `50537508` in a FP8 binary's kernel list, or a missing object
+file stops the build. The check reports every JSON path, dtype, compiled key
+list, object path, and object SHA-256. It checks normal and available relocatable
+variants separately; a valid relocatable variant cannot hide a broken normal
+variant. `supportInfo.tilingKey` alone is not accepted as evidence of compilation.
+
+To inspect an existing build without compiling or using an NPU, run from the
+repository root (both directories are checked even if the first fails):
+
+```bash
+set -o pipefail
+python3 csrc/attention/lightning_indexer_quant/check_kernel_metadata.py \
+  csrc/build/binary/ascend950/bin \
+  vllm_ascend/_cann_ops_custom 2>&1 | tee qli-kernel-metadata.log
+```
+
+This is a diagnostic check, not a fix for missing FP8 code. It does not modify
+JSON or binaries and does not prove which OPP the runtime loads. If generated
+metadata fails, investigate template extraction/compilation. If only installed
+metadata fails, investigate packaging/installation. If both pass but the FP8
+call still fails, inspect runtime binary selection and loaded OPP paths.
+Preserve `qli-kernel-metadata.log` and the complete build log before cleaning.
+Once metadata passes, rerun FP8 scores in a fresh process with `-x`, then run the
+mixed suite to verify that subsequent INT8 calls also succeed.
 
 To distinguish a standalone INT8 fault from errors following a failed FP8
 call, run the six INT8 scores cases together in a fresh Python process:

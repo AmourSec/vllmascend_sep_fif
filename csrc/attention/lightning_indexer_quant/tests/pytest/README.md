@@ -162,6 +162,45 @@ individual pytest failure, and the loaded OPP library paths from the same
 failing Python process. Source revision alone does not identify the loaded
 operator binary.
 
+For `Cannot find tilingKey[50537508]`, check the template selection and rebuilt
+kernel metadata. INT8 and FP8 must belong to the same `ASCENDC_TPL_SEL` list;
+the CANN compiler reads only the first preprocessed selection list, so a
+second unconditional list silently omits its kernel variants.
+The host encoder can still produce a key in a release build because it uses
+the parameter declaration without checking the selection list. The expected
+decode keys are `50528770` for INT8 and `50537508` for FP8.
+
+The host-only regression compiles the actual operator header with the installed
+CANN template header, checks both keys, and expands the debug selection table
+to verify all six existing INT8 combinations plus the FP8 TND/PA combination.
+It also checks that kernel preprocessing emits exactly one selection list
+containing both dtypes:
+
+```bash
+python3 -m pytest -q test_lightning_indexer_quant_tiling_key.py
+```
+
+It discovers CANN includes from `ASCEND_HOME_PATH`, `ASCEND_TOOLKIT_HOME`, or the
+standard toolkit location. Use `--cann-template-include=/path/to/include` to
+select another include root. Without a host C++ compiler or the CANN header,
+these three checks are skipped; they never substitute a mock template header.
+Passing them does not prove that the NPU binary contains the variants. After
+rebuilding OPP, search the generated JSON under
+`csrc/build/binary/ascend950/bin/lightning_indexer_quant` for `50537508`, then
+rerun the FP8 scores cases.
+
+To distinguish a standalone INT8 fault from errors following a failed FP8
+call, run the six INT8 scores cases together in a fresh Python process:
+
+```bash
+python3 -m pytest -q --source=hbm --tb=long \
+  test_lightning_indexer_quant_prefetch_scores.py -k int8
+```
+
+If this passes but a mixed run fails, retain the first FP8 error and the first
+subsequent INT8 error, including their full tracebacks. Do not infer a tiling
+cache or numerical defect from the total failure count alone.
+
 `--source=hbm` is the default and uses device-resident KV rows. It is the only
 source exercised by the default test fixture. The event-timing smoke benchmark
 is opt-in and reports NPU event milliseconds for both dtypes without asserting

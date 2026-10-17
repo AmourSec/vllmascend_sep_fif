@@ -100,6 +100,24 @@ python3 -m pytest -q --source=host
 Both commands include the INT8 and FP8 GLM-5.2 cases. For only the new profile
 and dtype checks, append `test_lightning_indexer_quant_prefetch_glm52.py`.
 
+For score mismatches, first run the deterministic head-mapping regression:
+
+```bash
+set -o pipefail
+git rev-parse HEAD
+python3 -m pytest -q --source=hbm --tb=short \
+  test_lightning_indexer_quant_prefetch_scores.py 2>&1 | tee qli-score-regression.log
+```
+
+Its 12 cases cover both dtypes, 32/64 heads, and token positions 0/64/128
+(zero-based), including the second QK bank and the next 128-token tile. Each
+request isolates one head; one extra request sums all heads. K=1 and a cold
+threshold expose that score through `next_threshold`. The expected values are
+exact binary fractions for INT8 and exact integers for FP8, checked directly
+and against the NumPy oracle. Failures include the full actual/expected score
+vectors. Attach this log and the commit ID along with the failing random case
+when reporting a numeric regression. These tests can also run with `--source=host`.
+
 `--source=hbm` is the default and uses device-resident KV rows. It is the only
 source exercised by the default test fixture. The event-timing smoke benchmark
 is opt-in and reports NPU event milliseconds for both dtypes without asserting

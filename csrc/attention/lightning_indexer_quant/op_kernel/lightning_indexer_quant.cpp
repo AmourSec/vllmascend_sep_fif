@@ -15,10 +15,16 @@
 
 #include "kernel_operator.h"
 #include "lib/matmul_intf.h"
+#if (__CCE_AICORE__ == 310)
+#include "arch35/lightning_indexer_quant_kernel_arch35.h"
+#else
 #include "lightning_indexer_quant_kernel.h"
+#endif
 #include "lightning_indexer_quant_template_tiling_key.h"
 
+#if (__CCE_AICORE__ != 310)
 using namespace LIQKernel;
+#endif
 
 #define INVOKE_LI_NO_KFC_OP_IMPL(templateClass, ...)                                                         \
     do {                                                                                                     \
@@ -34,11 +40,22 @@ template <int DT_Q, int DT_K, int DT_OUT, int PAGE_ATTENTION, int Q_LAYOUT_T, in
 __global__ __aicore__ void lightning_indexer_quant(__gm__ uint8_t *query, __gm__ uint8_t *key, __gm__ uint8_t *weights,
                                                    __gm__ uint8_t *queryScale, __gm__ uint8_t *keyScale,
                                                    __gm__ uint8_t *actualSeqLengthsQ, __gm__ uint8_t *actualSeqLengthsK,
-                                                   __gm__ uint8_t *blocktable, __gm__ uint8_t *sparseIndices,
+                                                   __gm__ uint8_t *blocktable, __gm__ uint8_t *kvAddresses,
+                                                   __gm__ uint8_t *prefetchThreshold, __gm__ uint8_t *sparseIndices,
+                                                   __gm__ uint8_t *gatheredKv, __gm__ uint8_t *prefetchIndices,
+                                                   __gm__ uint8_t *prefetchStats, __gm__ uint8_t *nextThreshold,
                                                    __gm__ uint8_t *workspace, __gm__ uint8_t *tiling)
 {
-#if (__CCE_AICORE__ == 310) || (defined __DAV_310R6__) || (__CCE_AICORE__ == 200)
-
+#if (__CCE_AICORE__ == 310)
+    TPipe tPipe;
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    GET_TILING_DATA_WITH_STRUCT(LIQTilingData, tilingData, tiling);
+    LIQ950::DecodePrefetch op;
+    op.Init(query, key, weights, queryScale, keyScale, actualSeqLengthsQ, actualSeqLengthsK,
+        blocktable, kvAddresses, prefetchThreshold, sparseIndices, gatheredKv, prefetchIndices,
+        prefetchStats, nextThreshold, GetUserWorkspace(workspace), &tilingData, &tPipe);
+    op.Process();
+#elif (defined __DAV_310R6__) || (__CCE_AICORE__ == 200)
 #else
     TPipe tPipe;
     __gm__ uint8_t *user = GetUserWorkspace(workspace);

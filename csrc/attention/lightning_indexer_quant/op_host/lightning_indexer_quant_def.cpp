@@ -61,13 +61,30 @@ public:
             .DataType({ge::DT_INT32})
             .Format({ge::FORMAT_ND})
             .AutoContiguous();
+        this->Input("kv_addresses")
+            .ParamType(OPTIONAL)
+            .DataType({ge::DT_INT64})
+            .Format({ge::FORMAT_ND})
+            .AutoContiguous();
+        this->Input("prefetch_threshold")
+            .ParamType(OPTIONAL)
+            .DataType({ge::DT_FLOAT})
+            .Format({ge::FORMAT_ND})
+            .AutoContiguous();
         this->Output("sparse_indices").ParamType(REQUIRED).DataType({ge::DT_INT32}).Format({ge::FORMAT_ND});
+        this->Output("gathered_kv").ParamType(REQUIRED).DataType({ge::DT_UINT8}).Format({ge::FORMAT_ND});
+        this->Output("prefetch_indices").ParamType(REQUIRED).DataType({ge::DT_INT32}).Format({ge::FORMAT_ND});
+        this->Output("prefetch_stats").ParamType(REQUIRED).DataType({ge::DT_INT32}).Format({ge::FORMAT_ND});
+        this->Output("next_threshold").ParamType(REQUIRED).DataType({ge::DT_FLOAT}).Format({ge::FORMAT_ND});
         this->Attr("query_quant_mode").AttrType(REQUIRED).Int(0);  // 0: 默认值，per-token-head
         this->Attr("key_quant_mode").AttrType(REQUIRED).Int(0);    // 0: 默认值，per-token-head
         this->Attr("layout_query").AttrType(OPTIONAL).String("BSND");
         this->Attr("layout_key").AttrType(OPTIONAL).String("PA_BSND");
         this->Attr("sparse_count").AttrType(OPTIONAL).Int(2048);  // 2048: 默认值，筛选前2048
         this->Attr("sparse_mode").AttrType(OPTIONAL).Int(3);      // 3: 默认值，只计算下三角
+        this->Attr("kv_row_bytes").AttrType(OPTIONAL).Int(0);
+        this->Attr("prefetch_budget").AttrType(OPTIONAL).Int(0);
+        this->Attr("ema_decay").AttrType(OPTIONAL).Float(0.5);
         OpAICoreConfig aicore_config;
         aicore_config.DynamicCompileStaticFlag(true)
             .DynamicFormatFlag(true)
@@ -79,6 +96,7 @@ public:
             .ExtendCfgInfo("jitCompile.flag", "static_false,dynamic_false");
         this->AICore().AddConfig("ascend910b", aicore_config);
         this->AICore().AddConfig("ascend910_93", aicore_config);
+        this->AICore().AddConfig("ascend950", aicore_config);
     }
 };
 OP_ADD(LightningIndexerQuant);

@@ -31,18 +31,18 @@ constexpr uint32_t kQkHeadStride = 128;
 constexpr uint32_t kQkSecondBankOffset = kMBaseMax * kS2Tile / 2;
 constexpr float kInt32Scale = 1.0f / 1024.0f;
 
+using CastTrait = Reg::CastTrait;
+
+constexpr CastTrait kInt32ToFloat = {Reg::RegLayout::UNKNOWN, Reg::SatMode::NO_SAT,
+                                     Reg::MaskMergeMode::ZEROING, RoundMode::CAST_ROUND};
+constexpr CastTrait kFloatToHalfRint = {Reg::RegLayout::ZERO, Reg::SatMode::NO_SAT,
+                                        Reg::MaskMergeMode::ZEROING, RoundMode::CAST_RINT};
+constexpr CastTrait kHalfToFloat = {Reg::RegLayout::ZERO, Reg::SatMode::UNKNOWN,
+                                    Reg::MaskMergeMode::ZEROING, RoundMode::UNKNOWN};
+
 __simd_vf__ void ComputeScoresVF(__ubuf__ float *out, __ubuf__ int32_t *qk, __ubuf__ half *weights,
                                  __ubuf__ half *qScale, __ubuf__ half *kScale)
 {
-    using CastTrait = Reg::CastTrait;
-
-    constexpr CastTrait kInt32ToFloat = {Reg::RegLayout::UNKNOWN, Reg::SatMode::NO_SAT,
-                                         Reg::MaskMergeMode::ZEROING, RoundMode::CAST_ROUND};
-    constexpr CastTrait kFloatToHalfRint = {Reg::RegLayout::ZERO, Reg::SatMode::NO_SAT,
-                                            Reg::MaskMergeMode::ZEROING, RoundMode::CAST_RINT};
-    constexpr CastTrait kHalfToFloat = {Reg::RegLayout::ZERO, Reg::SatMode::UNKNOWN,
-                                        Reg::MaskMergeMode::ZEROING, RoundMode::UNKNOWN};
-
     Reg::MaskReg maskF32 = Reg::CreateMask<float, Reg::MaskPattern::ALL>();
     Reg::MaskReg maskF16 = Reg::CreateMask<half, Reg::MaskPattern::ALL>();
     Reg::RegTensor<float> sum[2];

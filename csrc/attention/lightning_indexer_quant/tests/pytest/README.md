@@ -84,13 +84,15 @@ the custom OPP package, including its operator prototype library; rebuilding
 only the Torch extension cannot update that prototype. Rerun pytest in a new
 Python process after installation.
 
-The extension's `build_aclnn.sh` now removes `csrc/build` before building the
-OPP package. The kernel source-copy and compile `.done` files do not track all
-source/header changes, so retaining that directory can repackage old kernels.
-This makes OPP rebuilds slower, but prevents mixing new host libraries with old
-generated metadata or device binaries. The `op_build` generation commands also
-depend on their host libraries so an OpDef change regenerates ACLNN sources.
-That dependency fix alone does not make the entire kernel build incremental.
+The extension's `build_aclnn.sh` removes `csrc/build` before building the OPP
+package. Keep this clean build for the first rebuild after updating the branch:
+historical `.done` stamps may be newer than the stale sources they represent.
+Kernel source-copy stamps now depend on the files being copied, and kernel
+compile stamps depend on those source files, declared helper sources, the
+generated Python wrapper, and the compile script. Editing a nested template
+header therefore triggers both a fresh copy and kernel compilation during
+incremental CMake builds. The `op_build` generation commands also depend on
+their host libraries so an OpDef change regenerates ACLNN sources.
 
 To diagnose only the kernel build, start from a clean build directory:
 
@@ -169,6 +171,24 @@ second unconditional list silently omits its kernel variants.
 The host encoder can still produce a key in a release build because it uses
 the parameter declaration without checking the selection list. The expected
 decode keys are `50528770` for INT8 and `50537508` for FP8.
+
+If a FP8 JSON advertises `dtype=float8_e4m3fn` but contains only the six INT8
+keys, compare the template header itself, not just the kernel implementation
+header. From the repository root:
+
+```bash
+cmp csrc/attention/lightning_indexer_quant/op_kernel/lightning_indexer_quant_template_tiling_key.h \
+  csrc/build/binary/ascend950/src/lightning_indexer_quant/op_kernel/lightning_indexer_quant_template_tiling_key.h
+```
+
+A mismatch means the compiler's source copy differs from the checkout. Clean
+and rebuild OPP before rerunning device tests; do not edit the generated JSON
+to add the missing key. The host-only incremental build regression runs the
+production CMake copy/compile rules with a host C++ preprocessor:
+
+```bash
+python3 -m pytest -q csrc/cmake/tests/test_kernel_source_incremental.py
+```
 
 The host-only regression compiles the actual operator header with the installed
 CANN template header, checks both keys, and expands the debug selection table

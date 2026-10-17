@@ -271,8 +271,7 @@ log_selected_ops
   log "subshell cwd before cd=$(pwd)"
   cd "${ROOT_DIR}/csrc"
   log "subshell cwd after cd=$(pwd)"
-  # Kernel source-copy and compile stamps do not track all input files.
-  # Reusing them can package an old kernel with a newly built host library.
+  # Discard historical stamps and generated artifacts before a complete OPP build.
   log "cleaning csrc/build, output and build_out before building the OPP package"
   rm -rf -- build output build_out
 

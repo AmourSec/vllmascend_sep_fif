@@ -96,7 +96,87 @@ public:
             .ExtendCfgInfo("jitCompile.flag", "static_false,dynamic_false");
         this->AICore().AddConfig("ascend910b", aicore_config);
         this->AICore().AddConfig("ascend910_93", aicore_config);
-        this->AICore().AddConfig("ascend950", aicore_config);
+
+        OpAICoreConfig aicore_config_95;
+        aicore_config_95.Input("query")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_INT8, ge::DT_FLOAT8_E4M3FN})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("key")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_INT8, ge::DT_FLOAT8_E4M3FN})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("weights")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("query_dequant_scale")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("key_dequant_scale")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT16, ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("actual_seq_lengths_query")
+            .ParamType(OPTIONAL)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("actual_seq_lengths_key")
+            .ParamType(OPTIONAL)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("block_table")
+            .ParamType(OPTIONAL)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("kv_addresses")
+            .ParamType(OPTIONAL)
+            .DataTypeList({ge::DT_INT64})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Input("prefetch_threshold")
+            .ParamType(OPTIONAL)
+            .DataTypeList({ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
+        aicore_config_95.Output("sparse_indices")
+            .ParamType(REQUIRED)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND});
+        aicore_config_95.Output("gathered_kv")
+            .ParamType(REQUIRED)
+            .DataTypeList({ge::DT_UINT8})
+            .FormatList({ge::FORMAT_ND});
+        aicore_config_95.Output("prefetch_indices")
+            .ParamType(REQUIRED)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND});
+        aicore_config_95.Output("prefetch_stats")
+            .ParamType(REQUIRED)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND});
+        aicore_config_95.Output("next_threshold")
+            .ParamType(REQUIRED)
+            .DataTypeList({ge::DT_FLOAT})
+            .FormatList({ge::FORMAT_ND});
+        aicore_config_95.DynamicCompileStaticFlag(true)
+            .DynamicFormatFlag(true)
+            .DynamicRankSupportFlag(true)
+            .DynamicShapeSupportFlag(true)
+            .NeedCheckSupportFlag(false)
+            .PrecisionReduceFlag(true)
+            .ExtendCfgInfo("aclnnSupport.value", "support_aclnn")
+            .ExtendCfgInfo("jitCompile.flag", "static_false,dynamic_false");
+        this->AICore().AddConfig("ascend950", aicore_config_95);
     }
 };
 OP_ADD(LightningIndexerQuant);

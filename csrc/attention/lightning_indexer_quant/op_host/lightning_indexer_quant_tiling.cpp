@@ -280,16 +280,22 @@ ge::graphStatus LIQInfoParser::GetAndCheckInOutDataType()
         OPS_LOG_E(opName_, "The data types of the input query_dequant_scale and key_dequant_scale must be the same."),
         return ge::GRAPH_FAILED);
 
-    OPS_ERR_IF(inputQType_ != ge::DT_INT8,
-               OPS_LOG_E(opName_, "The data types of the input query and key must be int8."), return ge::GRAPH_FAILED);
+    const bool int8_inputs = inputQType_ == ge::DT_INT8;
+    const bool fp8_inputs = inputQType_ == ge::DT_FLOAT8_E4M3FN;
+    OPS_ERR_IF(!int8_inputs && !fp8_inputs,
+               OPS_LOG_E(opName_, "The input query and key must be int8 or float8_e4m3fn."),
+               return ge::GRAPH_FAILED);
+    OPS_ERR_IF(fp8_inputs && socVersion_ != platform_ascendc::SocVersion::ASCEND950,
+               OPS_LOG_E(opName_, "float8_e4m3fn query and key are supported only on ASCEND950."),
+               return ge::GRAPH_FAILED);
 
-    OPS_ERR_IF(weightsType_ != ge::DT_FLOAT16,
-               OPS_LOG_E(opName_, "The data types of the input weights must be float16."), return ge::GRAPH_FAILED);
-
-    OPS_ERR_IF(
-        inputQueryScaleType_ != ge::DT_FLOAT16,
-        OPS_LOG_E(opName_, "The data types of the input query_dequant_scale and key_dequant_scale must be float16."),
-        return ge::GRAPH_FAILED);
+    const ge::DataType parameter_type = int8_inputs ? ge::DT_FLOAT16 : ge::DT_FLOAT;
+    OPS_ERR_IF(weightsType_ != parameter_type,
+               OPS_LOG_E(opName_, "weights dtype must match the query quantization mode."),
+               return ge::GRAPH_FAILED);
+    OPS_ERR_IF(inputQueryScaleType_ != parameter_type,
+               OPS_LOG_E(opName_, "dequant scale dtype must match the query quantization mode."),
+               return ge::GRAPH_FAILED);
 
     OPS_ERR_IF(outputType_ != ge::DT_INT32,
                OPS_LOG_E(opName_, "The data types of the output sparse_indices must be int32."),
@@ -801,6 +807,9 @@ ge::graphStatus LIQInfoParser::ParseAndCheck(LIQTilingInfo &liqInfo)
         return ge::GRAPH_FAILED;
     }
     if (opParamInfo_.kvAddresses.tensor != nullptr) {
+        OPS_ERR_IF(gSize_ != 32 && gSize_ != 64,
+                   OPS_LOG_E(opName_, "prefetch mode requires 32 or 64 query heads."),
+                   return ge::GRAPH_FAILED);
         OPS_ERR_IF(qLayout_ != DataLayout::TND || kLayout_ != DataLayout::PA_BSND ||
                        bSize_ != opParamInfo_.query.shape->GetStorageShape().GetDim(0),
                    OPS_LOG_E(opName_, "prefetch mode requires TND/PA_BSND and one query per request."),

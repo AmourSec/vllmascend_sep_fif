@@ -19,6 +19,7 @@ class PrefetchInputs(NamedTuple):
     sparse_count: int = 2048
     ema_decay: float = 0.5
     kv_payload: np.ndarray | None = None
+    dtype: str = "int8"
 
 
 class PrefetchExpected(NamedTuple):
@@ -45,8 +46,14 @@ def _row_bytes(key: np.ndarray, block: int, offset: int, row_bytes: int) -> np.n
 
 
 def compute_expected(inputs: PrefetchInputs) -> PrefetchExpected:
-    query = np.asarray(inputs.query, dtype=np.int8)
-    key = np.asarray(inputs.key, dtype=np.int8)
+    if inputs.dtype == "int8":
+        query = np.asarray(inputs.query, dtype=np.int8)
+        key = np.asarray(inputs.key, dtype=np.int8)
+    elif inputs.dtype == "fp8":
+        query = np.asarray(inputs.query, dtype=np.float32)
+        key = np.asarray(inputs.key, dtype=np.float32)
+    else:
+        raise ValueError(f"unsupported golden dtype: {inputs.dtype}")
     batch, heads, _ = query.shape
     block_size = key.shape[1]
     valid_k = np.asarray(inputs.actual_seq_lengths_key, dtype=np.int32)
@@ -58,11 +65,16 @@ def compute_expected(inputs: PrefetchInputs) -> PrefetchExpected:
     stats = np.zeros((batch, 2), dtype=np.int32)
     next_threshold = np.empty(batch, dtype=np.float32)
     score_rows: list[np.ndarray] = []
-    qfactor = (
-        (np.asarray(inputs.weights, dtype=np.float16) * np.asarray(inputs.query_dequant_scale, dtype=np.float16))
-        .astype(np.float16)
-        .astype(np.float32)
-    )
+    if inputs.dtype == "int8":
+        qfactor = (
+            (np.asarray(inputs.weights, dtype=np.float16) * np.asarray(inputs.query_dequant_scale, dtype=np.float16))
+            .astype(np.float16)
+            .astype(np.float32)
+        )
+    else:
+        qfactor = np.asarray(inputs.weights, dtype=np.float32) * np.asarray(
+            inputs.query_dequant_scale, dtype=np.float32
+        )
 
     for row in range(batch):
         length = max(0, int(valid_k[row]))
@@ -70,9 +82,13 @@ def compute_expected(inputs: PrefetchInputs) -> PrefetchExpected:
         for token in range(length):
             page = int(inputs.block_table[row, token // block_size])
             offset = token % block_size
-            qk = np.int32(query[row]) @ np.int32(key[page, offset, 0])
-            qk_fp16 = np.asarray(qk / 1024.0, dtype=np.float16).astype(np.float32)
-            relu_qk = np.maximum(qk_fp16, 0.0)
+            if inputs.dtype == "int8":
+                qk = np.int32(query[row]) @ np.int32(key[page, offset, 0])
+                qk_fp16 = np.asarray(qk / 1024.0, dtype=np.float16).astype(np.float32)
+                relu_qk = np.maximum(qk_fp16, 0.0)
+            else:
+                qk = np.asarray(query[row] @ key[page, offset, 0], dtype=np.float32)
+                relu_qk = np.maximum(qk, 0.0)
             scale = float(np.asarray(inputs.key_dequant_scale[page, offset, 0], dtype=np.float32))
             score = np.float32(0.0)
             for head in range(heads):

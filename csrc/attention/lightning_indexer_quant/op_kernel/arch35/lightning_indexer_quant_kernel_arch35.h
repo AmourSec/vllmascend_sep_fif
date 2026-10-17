@@ -18,35 +18,36 @@
 
 namespace LIQ950 {
 using namespace AscendC;
-using CubeType = QLIV2Common::QLIV2Type<int8_t, int8_t, int32_t, uint16_t, int32_t, true,
-    QLIV2Common::LI_LAYOUT::TND, QLIV2Common::LI_LAYOUT::PA_BBND, half, half>;
-
+template <typename QueryT, typename QkT, typename ScaleT>
 class DecodePrefetch {
 public:
+    using CubeType = QLIV2Common::QLIV2Type<QueryT, QueryT, QkT, uint16_t, int32_t, true,
+        QLIV2Common::LI_LAYOUT::TND, QLIV2Common::LI_LAYOUT::PA_BBND, ScaleT, ScaleT>;
+
     __aicore__ inline void Init(GM_ADDR query, GM_ADDR key, GM_ADDR weights, GM_ADDR qScale, GM_ADDR kScale,
         GM_ADDR qLengths, GM_ADDR kLengths, GM_ADDR blocks, GM_ADDR addresses, GM_ADDR threshold,
         GM_ADDR indices, GM_ADDR gathered, GM_ADDR candidates, GM_ADDR stats, GM_ADDR nextThreshold,
         GM_ADDR workspace, const LIQTilingData *tiling, TPipe *pipe)
     {
         t_ = tiling;
-        query_.SetGlobalBuffer((__gm__ int8_t *)query);
-        key_.SetGlobalBuffer((__gm__ int8_t *)key);
-        weights_.SetGlobalBuffer((__gm__ half *)weights);
-        qScale_.SetGlobalBuffer((__gm__ half *)qScale);
-        kScale_.SetGlobalBuffer((__gm__ half *)kScale);
+        query_.SetGlobalBuffer((__gm__ QueryT *)query);
+        key_.SetGlobalBuffer((__gm__ QueryT *)key);
+        weights_.SetGlobalBuffer((__gm__ ScaleT *)weights);
+        qScale_.SetGlobalBuffer((__gm__ ScaleT *)qScale);
+        kScale_.SetGlobalBuffer((__gm__ ScaleT *)kScale);
         qLengths_.SetGlobalBuffer((__gm__ int32_t *)qLengths);
         kLengths_.SetGlobalBuffer((__gm__ int32_t *)kLengths);
         blocks_.SetGlobalBuffer((__gm__ int32_t *)blocks);
         DataCacheCleanAndInvalid<int32_t, CacheLine::ENTIRE_DATA_CACHE, DcciDst::CACHELINE_OUT>(blocks_);
         if ASCEND_IS_AIC {
             QLIV2Common::ConstInfo info{};
-            info.mBaseSize = 128;
+            info.mBaseSize = 2 * t_->gSize;
             info.mBaseSizeMax = 128;
             info.s1BaseSize = 2;
             info.s2BaseSize = 128;
             info.batchSize = t_->bSize;
-            info.gSize = 64;
-            info.qHeadNum = 64;
+            info.gSize = t_->gSize;
+            info.qHeadNum = t_->gSize;
             info.kHeadNum = 1;
             info.headDim = 128;
             info.sparseCount = t_->sparseCount;
@@ -57,7 +58,7 @@ public:
             info.keyStride0 = t_->blockSize * 128;
             info.keyDequantScaleStride0 = t_->blockSize;
             info.maxSeqlenQ = -1;
-            info.quantMode = 2;
+            info.quantMode = std::is_same_v<QueryT, int8_t> ? 2 : 1;
             cube_.InitParams(info);
             cube_.InitBuffers(pipe);
             cube_.InitMm1GlobalTensor(blocks_, key_, query_);
@@ -65,9 +66,9 @@ public:
         if ASCEND_IS_AIV {
             // FIX dual destinations require the identical first UB allocation on AIC and AIV.
             pipe->InitBuffer(qkBuf_, 65536);
-            qk_ = qkBuf_.Get<int32_t>();
-            pipe->InitBuffer(scaleBuf_, 512);
-            scales_ = scaleBuf_.Get<half>();
+            qk_ = qkBuf_.Get<QkT>();
+            pipe->InitBuffer(scaleBuf_, 256 * sizeof(ScaleT));
+            scales_ = scaleBuf_.Get<ScaleT>();
             pipe->InitBuffer(scoreBuf_, 512);
             scores_ = scoreBuf_.Get<float>();
             selected_.Init(pipe, t_->sparseCount);
@@ -101,8 +102,8 @@ public:
                     selected_.Reset();
                     rows_.Reset(batch);
                     if (length > 0) {
-                        DataCopy(scales_, weights_[batch * 64], 64);
-                        DataCopy(scales_[64], qScale_[batch * 64], 64);
+                        DataCopy(scales_, weights_[batch * t_->gSize], t_->gSize);
+                        DataCopy(scales_[64], qScale_[batch * t_->gSize], t_->gSize);
                     }
                 }
             }
@@ -113,11 +114,11 @@ public:
                     run.loop = loop;
                     run.bIdx = batch;
                     run.s2Idx = start / 128;
-                    run.actMBaseSize = 64;
+                    run.actMBaseSize = t_->gSize;
                     run.actS1Size = 1;
                     run.actS2Size = length;
                     run.actualSingleProcessSInnerSize = size;
-                    run.tensorQueryOffset = static_cast<uint64_t>(batch) * 64 * 128;
+                    run.tensorQueryOffset = static_cast<uint64_t>(batch) * t_->gSize * 128;
                     run.isFirstS2InnerLoop = start == 0;
                     run.isLastS2InnerLoop = start + size == length;
                     cube_.ComputeMm1(run);
@@ -128,7 +129,7 @@ public:
                         LoadKeyScales(batch, start, size);
                         SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
                         WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
-                        ComputeScores(scores_, qk_[(loop % 2) * 64], scales_, scales_[64], scales_[128]);
+                        ComputeScores(scores_, qk_[(loop % 2) * 64], scales_, scales_[64], scales_[128], t_->gSize);
                         SetFlag<HardEvent::V_S>(EVENT_ID0);
                         WaitFlag<HardEvent::V_S>(EVENT_ID0);
                     }
@@ -189,7 +190,7 @@ private:
             part = part < size - done ? part : size - done;
             int32_t physical = blocks_.GetValue(batch * t_->maxBlockNumPerBatch + logical / t_->blockSize);
             DataCopyPad(scales_[128 + done], kScale_[static_cast<uint64_t>(physical) * t_->blockSize + pageOffset],
-                        {1, part * 2, 0, 0, 0}, {false, 0, 0, 0});
+                        {1, static_cast<uint32_t>(part * sizeof(ScaleT)), 0, 0, 0}, {false, 0, 0, 0});
             done += part;
         }
     }
@@ -198,12 +199,12 @@ private:
     QLIV2Kernel::QLIV2Matmul<CubeType> cube_;
     StreamingTopK selected_;
     PrefetchRows rows_;
-    GlobalTensor<int8_t> query_, key_;
-    GlobalTensor<half> weights_, qScale_, kScale_;
+    GlobalTensor<QueryT> query_, key_;
+    GlobalTensor<ScaleT> weights_, qScale_, kScale_;
     GlobalTensor<int32_t> qLengths_, kLengths_, blocks_;
     TBuf<TPosition::VECCALC> qkBuf_, scaleBuf_, scoreBuf_;
-    LocalTensor<int32_t> qk_;
-    LocalTensor<half> scales_;
+    LocalTensor<QkT> qk_;
+    LocalTensor<ScaleT> scales_;
     LocalTensor<float> scores_;
 };
 }

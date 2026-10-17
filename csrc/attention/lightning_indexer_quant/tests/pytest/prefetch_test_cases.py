@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 from types import ModuleType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import numpy as np
 import pytest
@@ -15,6 +15,8 @@ else:
     Tensor = object
 
 from lightning_indexer_quant_prefetch_golden import PrefetchInputs
+
+DType = Literal["int8", "fp8"]
 
 
 class Case(NamedTuple):
@@ -56,19 +58,43 @@ def _make_case(
     negative_weights: bool = False,
     tied_scores: bool = False,
     row_bytes: int = 128,
+    heads: int = 32,
+    seed: int = 811,
+    quantized_inputs: bool = False,
+    dtype: DType = "int8",
 ) -> Case:
-    torch.manual_seed(811)
-    batch, heads, width = len(lengths), 64, 128
-    query = torch.randint(-32, 32, (batch, heads, width), dtype=torch.int8, device="npu")
-    key = torch.randint(-32, 32, (physical, block_size, 1, width), dtype=torch.int8, device="npu")
+    if dtype not in {"int8", "fp8"}:
+        raise ValueError(f"unsupported test dtype: {dtype}")
+    torch.manual_seed(seed)
+    batch, width = len(lengths), 128
+    if dtype == "fp8":
+        query_fp = torch.randn((batch, heads, width), dtype=torch.float32, device="npu")
+        key_fp = torch.randn((physical, block_size, 1, width), dtype=torch.float32, device="npu")
+        query_scale = torch.amax(torch.abs(query_fp), dim=-1).clamp_min(1.0e-6) / 448.0
+        key_scale = torch.amax(torch.abs(key_fp), dim=-1).clamp_min(1.0e-6) / 448.0
+        query = (query_fp / query_scale[..., None]).clamp(-448, 448).to(torch.float8_e4m3fn)
+        key = (key_fp / key_scale[..., None]).clamp(-448, 448).to(torch.float8_e4m3fn)
+    elif quantized_inputs:
+        query_fp = torch.randn((batch, heads, width), dtype=torch.float32, device="npu")
+        query_scale = torch.amax(torch.abs(query_fp), dim=-1).clamp_min(1.0e-6) / 127.0
+        query = torch.round(query_fp / query_scale[..., None]).clamp(-127, 127).to(torch.int8)
+        key_fp = torch.randn((physical, block_size, 1, width), dtype=torch.float32, device="npu")
+        key_scale = torch.amax(torch.abs(key_fp), dim=-1, keepdim=True).clamp_min(1.0e-6).squeeze(-1) / 127.0
+        key = torch.round(key_fp / key_scale[..., None]).clamp(-127, 127).to(torch.int8)
+        query_scale = query_scale.to(torch.float16)
+        key_scale = key_scale.to(torch.float16)
+    else:
+        query = torch.randint(-32, 32, (batch, heads, width), dtype=torch.int8, device="npu")
+        key = torch.randint(-32, 32, (physical, block_size, 1, width), dtype=torch.int8, device="npu")
+        query_scale = torch.full((batch, heads), 0.25, dtype=torch.float16, device="npu")
+        key_scale = torch.full((physical, block_size, 1), 0.125, dtype=torch.float16, device="npu")
     payload = torch.randint(0, 256, (physical, block_size, 1, row_bytes), dtype=torch.uint8, device="npu")
     if tied_scores:
         key.zero_()
-    weights = torch.rand((batch, heads), dtype=torch.float16, device="npu")
+    weight_dtype = torch.float32 if dtype == "fp8" else torch.float16
+    weights = torch.rand((batch, heads), dtype=weight_dtype, device="npu")
     if negative_weights:
-        weights = torch.linspace(-1.0, 1.0, heads, dtype=torch.float16, device="npu").repeat(batch, 1)
-    query_scale = torch.full((batch, heads), 0.25, dtype=torch.float16, device="npu")
-    key_scale = torch.full((physical, block_size, 1), 0.125, dtype=torch.float16, device="npu")
+        weights = torch.linspace(-1.0, 1.0, heads, dtype=weight_dtype, device="npu").repeat(batch, 1)
     key_lengths = torch.tensor(lengths, dtype=torch.int32, device="npu")
     query_lengths = torch.arange(1, batch + 1, dtype=torch.int32, device="npu")
     max_blocks = max(1, max((length + block_size - 1) // block_size for length in lengths))
@@ -92,8 +118,12 @@ def _make_case(
                     raise RuntimeError("MemFabric get_dva returned zero for an offload row")
                 addresses_cpu[row, token] = dva
     addresses = torch.tensor(addresses_cpu, dtype=torch.int64, device="npu")
-    query_cpu = query.cpu().numpy()
-    key_cpu = key.cpu().numpy()
+    if dtype == "fp8":
+        query_cpu = query.float().cpu().numpy()
+        key_cpu = key.float().cpu().numpy()
+    else:
+        query_cpu = query.cpu().numpy()
+        key_cpu = key.cpu().numpy()
     golden = PrefetchInputs(
         query=query_cpu,
         key=key_cpu,
@@ -107,6 +137,7 @@ def _make_case(
         prefetch_budget=budget,
         sparse_count=sparse_count,
         kv_payload=payload.cpu().numpy(),
+        dtype=dtype,
     )
     return Case(
         query,

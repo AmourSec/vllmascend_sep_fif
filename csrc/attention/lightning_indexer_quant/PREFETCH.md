@@ -36,17 +36,19 @@ persistent LRU cache. Its workspace is private to the call. The caller carries
 ## 950 execution
 
 One AIC and its paired AIVs handle each request, with strided request assignment
-when the batch exceeds the physical AIC count. The existing local QLI-V2 INT8
+when the batch exceeds the physical AIC count. The existing local QLI-V2
 Cube service supplies QK tiles directly to AIV UB using 950 FIX dual destination
 and mode-4 events. AIV0 computes scores and copies KV rows; AIV1 acknowledges
 its unused half of the QK tile. The AIV returns the QK-buffer credit before
 starting candidate copies, allowing the next Cube tile to overlap those copies.
 
 Scores retain FP32 resolution for selection; they are not converted to BF16.
-The numeric order is INT32 dot, divide by 1024, FP16 RINT round-trip, ReLU,
+The INT8 numeric order is INT32 dot, divide by 1024, FP16 RINT round-trip, ReLU,
 multiply by FP16-rounded `weight * query_scale`, sequential FP32 head sum,
-then multiply by the FP16 key scale converted to FP32. Inputs must produce
-finite scores. All 64 heads participate. TopK uses the existing FP32 radix
+then multiply by the FP16 key scale converted to FP32. The FP8 E4M3FN path
+uses FP32 dot products, ReLU, FP32 `weight * query_scale`, sequential FP32 head
+sum, and FP32 key scales, without the INT8 division or FP16 round-trips. Inputs must produce
+finite scores. All input heads (32 or 64) participate. TopK uses the existing FP32 radix
 selector with ordered float-bit keys and bounded UB buffers.
 
 Each speculative row is completely copied from its source through UB into HBM
@@ -63,11 +65,12 @@ core assignment, transfer batching, or integrating with attention.
 
 ## Input and lifetime contract
 
-- Q: contiguous INT8 `[B,64,128]`, TND, exactly one decode query per request.
-- K: contiguous INT8 `[physical_blocks,block_size,1,128]`, PA_BSND.
+- Q: contiguous `[B,H,128]`, H is 32 or 64, TND, exactly one decode query per request.
+- K: contiguous `[physical_blocks,block_size,1,128]`, PA_BSND, with the same dtype as Q.
   Block size is a positive multiple of 16, at most 1024.
-- Weights and Q scales: FP16 `[B,64]`; K scales: FP16
-  `[physical_blocks,block_size,1]`.
+- Q/K dtype is INT8 with FP16 weights/scales, or FP8 E4M3FN with FP32 weights/scales.
+  Mixed dtype combinations and other FP8 formats are rejected.
+- Weights and Q scales: `[B,H]`; K scales: `[physical_blocks,block_size,1]`.
 - Query lengths: INT32 cumulative TND ends `[1,2,...,B]`.
   Key lengths: INT32 per-request visible lengths `[B]`, not cumulative.
 - Block table: INT32 `[B,max_blocks]`. Only pages covering the visible key
@@ -78,6 +81,24 @@ core assignment, transfer batching, or integrating with attention.
 - Thresholds: FLOAT32 `[B]`, stored on the NPU. All tensor inputs are on the
   same NPU. K is 1..2048, budget is 0..2048, row bytes is 1..4096, and EMA decay
   is finite in `[0,1)`.
+
+The GLM-5.2 profile uses 32 indexer heads, head dimension 128, and TopK=2048,
+matching the [model configuration](https://huggingface.co/zai-org/GLM-5.2/raw/main/config.json).
+The model's 64 attention heads are not its indexer head count. The standalone
+operator accepts 32 heads directly; callers do not need to pad to 64.
+The standalone interface selects INT8 or ordinary FP8 E4M3FN computation from
+the Q/K dtype. FP8 registration is restricted to Ascend 950. The dtype support
+does not connect this operator to the model's A5 indexer path, and does not
+cover MXFP8 or HiFloat8.
+
+Tests use synthetic per-row quantized inputs with these dimensions, including
+per-head Q scales and per-token K scales. Both dtypes cover TopK=2048 with
+lengths 2047, 2048, and 4097, two fixed seeds, and zero/enabled budgets.
+A 1152-byte payload case represents an unpacked BF16
+MLA row with 512 latent and 64 RoPE elements: `(512 + 64) * 2`. The operator
+copies opaque bytes; actual cache packing, quantization metadata, and row width
+remain the caller's responsibility. These tests do not reproduce trained-model
+activation distributions or measure model quality or realistic prefetch hit rates.
 
 Host rows must be allocated and mapped through MemFabric's supported allocator.
 Use `offload_get_dva`/`get_dva`, not the numerical value of an arbitrary CPU or

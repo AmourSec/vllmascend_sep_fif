@@ -33,11 +33,18 @@ inline void check_common(const at::Tensor &query, const at::Tensor &key, const a
     TORCH_CHECK(query.is_contiguous() && key.is_contiguous() && weights.is_contiguous() &&
                     query_scale.is_contiguous() && key_scale.is_contiguous(),
                 "LightningIndexerQuant inputs must be contiguous");
-    TORCH_CHECK(query.scalar_type() == at::kChar && key.scalar_type() == at::kChar,
-                "query and key must be INT8");
-    TORCH_CHECK(weights.scalar_type() == at::kHalf && query_scale.scalar_type() == at::kHalf &&
-                    key_scale.scalar_type() == at::kHalf,
-                "weights and dequant scales must be FP16");
+    TORCH_CHECK(query.scalar_type() == key.scalar_type(),
+                "query and key must have the same dtype");
+    const bool int8_inputs = query.scalar_type() == at::kChar;
+    const bool fp8_inputs = query.scalar_type() == at::kFloat8_e4m3fn;
+    TORCH_CHECK(int8_inputs || fp8_inputs,
+                "query and key must be INT8 or FLOAT8_E4M3FN");
+    const at::ScalarType parameter_dtype = int8_inputs ? at::kHalf : at::kFloat;
+    TORCH_CHECK(weights.scalar_type() == parameter_dtype &&
+                    query_scale.scalar_type() == parameter_dtype &&
+                    key_scale.scalar_type() == parameter_dtype,
+                int8_inputs ? "INT8 query/key require FP16 weights and dequant scales"
+                            : "FLOAT8_E4M3FN query/key require FP32 weights and dequant scales");
 }
 
 inline at::Tensor empty_output(const at::Tensor &like, at::IntArrayRef shape, at::ScalarType dtype)
@@ -142,14 +149,14 @@ npu_lightning_indexer_quant_prefetch(
     TORCH_CHECK(query.dim() == 3 && key.dim() == 4 && weights.dim() == 2 &&
                     query_dequant_scale.dim() == 2 && key_dequant_scale.dim() == 3,
                 "prefetch API expects TND/PA_BSND ranks (3,4,2,2,3)");
-    TORCH_CHECK(query.size(1) == 64 && query.size(2) == 128,
-                "query shape must be [T,64,128]");
+    TORCH_CHECK((query.size(1) == 32 || query.size(1) == 64) && query.size(2) == 128,
+                "query shape must be [T,H,128], H must be 32 or 64");
     TORCH_CHECK(key.size(2) == 1 && key.size(3) == 128 && key.size(1) > 0 &&
                     key.size(1) <= 1024 && key.size(1) % 16 == 0,
                 "key shape must be [blocks,block_size,1,128], block_size multiple of 16 and <= 1024");
     TORCH_CHECK(weights.size(0) == query.size(0) && weights.size(1) == query.size(1) &&
                     query_dequant_scale.size(0) == query.size(0) && query_dequant_scale.size(1) == query.size(1),
-                "weights and query_dequant_scale must be [T,64]");
+                "weights and query_dequant_scale must be [T,H], matching query heads");
     TORCH_CHECK(key_dequant_scale.size(0) == key.size(0) && key_dequant_scale.size(1) == key.size(1) &&
                     key_dequant_scale.size(2) == 1,
                 "key_dequant_scale must be [blocks,block_size,1]");

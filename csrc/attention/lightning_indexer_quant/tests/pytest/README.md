@@ -25,16 +25,34 @@ Decode tests use one query token per request, so `actual_seq_lengths_query` is
 the cumulative end vector `[1, 2, ..., B]`; `actual_seq_lengths_key` contains
 each request's independent KV length.
 
+The default query shape is `[B,32,128]`, matching GLM-5.2's indexer heads and
+head dimension in its
+[configuration](https://huggingface.co/zai-org/GLM-5.2/raw/main/config.json).
+The GLM-5.2 profile tests use TopK=2048, block size 128, lengths 2047/2048/4097
+(including streaming compaction), and a 1152-byte payload representing an unpacked BF16 MLA row
+with 512 latent plus 64 RoPE elements. Small K=7 cases remain for boundary
+checks. A separate 64-head regression checks equivalence to zero-padded
+32-head inputs.
+
+Both INT8 Q/K with FP16 weights/scales and FP8 E4M3FN Q/K with FP32
+weights/scales are covered, using seeds 811/1952 and budgets 0/8. Profile inputs
+are reproducible synthetic per-row quantizations with varying scales, not
+captured GLM-5.2 activations. Passing these tests verifies the shape and
+standalone numeric contract; it does not validate model integration, end-to-end model accuracy,
+the deployed KV cache's packing, or representative prefetch hit rates.
+
 The expected outputs are `indices:int32[B,1,K]`, `gathered_kv:uint8[B,K,row_bytes]`,
 `prefetch_indices:int32[B,max(1,budget)]`, `stats:int32[B,2]` containing
 `[candidate_count,fallback_count]`, and `next_threshold:float32[B]`. Every
 output is fixed-size; invalid and unused slots are `-1` for index tensors and
 zero for gathered bytes.
 
-The oracle follows the contract's numeric order: INT32 QK dot divided by 1024,
+The INT8 oracle follows the contract's numeric order: INT32 QK dot divided by 1024,
 rounded to FP16, converted to FP32, ReLU applied, FP16-rounded
 `weights*query_dequant_scale`, FP32 head reduction, then multiplication by the
-key scale. Top-k ties are compared as valid boundary sets, so a tie may appear
+key scale. The FP8 oracle reads Q/K after E4M3FN quantization, then uses FP32
+QK dot, ReLU, FP32 `weights*query_dequant_scale`, sequential FP32 head reduction,
+and FP32 key scale, without `/1024` or FP16 rounding. Top-k ties are compared as valid boundary sets, so a tie may appear
 in any order. Candidate IDs must be chronological, strictly above the threshold,
 and capped by the per-request budget. The selected top-k set must remain valid
 when threshold or budget changes. EMA checks use the actual kth score with the
@@ -71,9 +89,13 @@ python3 -m pytest -q --source=hbm
 python3 -m pytest -q --source=host
 ```
 
+Both commands include the INT8 and FP8 GLM-5.2 cases. For only the new profile
+and dtype checks, append `test_lightning_indexer_quant_prefetch_glm52.py`.
+
 `--source=hbm` is the default and uses device-resident KV rows. It is the only
 source exercised by the default test fixture. The event-timing smoke benchmark
-is opt-in and reports NPU event milliseconds without asserting a speedup:
+is opt-in and reports NPU event milliseconds for both dtypes without asserting
+a speedup. It uses 32 heads, context length 4097, TopK=2048, and 1152-byte rows:
 
 ```bash
 python3 -m pytest -q --source=hbm --benchmark \

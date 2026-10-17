@@ -24,7 +24,6 @@ namespace detail {
 
 namespace Reg = AscendC::Reg;
 
-constexpr uint16_t kQueryHeads = 64;
 constexpr uint32_t kS2Tile = 128;
 constexpr uint32_t kMBaseMax = 128;
 constexpr uint32_t kQkHeadStride = 128;
@@ -40,8 +39,9 @@ constexpr CastTrait kFloatToHalfRint = {Reg::RegLayout::ZERO, Reg::SatMode::NO_S
 constexpr CastTrait kHalfToFloat = {Reg::RegLayout::ZERO, Reg::SatMode::UNKNOWN,
                                     Reg::MaskMergeMode::ZEROING, RoundMode::UNKNOWN};
 
-__simd_vf__ void ComputeScoresVF(__ubuf__ float *out, __ubuf__ int32_t *qk, __ubuf__ half *weights,
-                                 __ubuf__ half *qScale, __ubuf__ half *kScale)
+template <typename QkT, typename ScaleT>
+__simd_vf__ void ComputeScoresVF(__ubuf__ float *out, __ubuf__ QkT *qk, __ubuf__ ScaleT *weights,
+                                 __ubuf__ ScaleT *qScale, __ubuf__ ScaleT *kScale, uint16_t headCount)
 {
     Reg::MaskReg maskF32 = Reg::CreateMask<float, Reg::MaskPattern::ALL>();
     Reg::MaskReg maskF16 = Reg::CreateMask<half, Reg::MaskPattern::ALL>();
@@ -63,30 +63,43 @@ __simd_vf__ void ComputeScoresVF(__ubuf__ float *out, __ubuf__ int32_t *qk, __ub
     Reg::Duplicate(sum[0], 0.0f, maskF32);
     Reg::Duplicate(sum[1], 0.0f, maskF32);
 
-    Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(weightHalf, weights);
-    Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(qScaleHalf, qScale);
-    Reg::Cast<float, half, kHalfToFloat>(weight, weightHalf, maskF16);
-    Reg::Cast<float, half, kHalfToFloat>(qScaleFloat, qScaleHalf, maskF16);
-    Reg::Mul(weightScaled, weight, qScaleFloat, maskF32);
-    Reg::Cast<half, float, kFloatToHalfRint>(weightScaledHalf, weightScaled, maskF32);
-    Reg::Cast<float, half, kHalfToFloat>(weightScaled, weightScaledHalf, maskF16);
+    if constexpr (std::is_same_v<ScaleT, half>) {
+        Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(weightHalf, weights);
+        Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(qScaleHalf, qScale);
+        Reg::Cast<float, half, kHalfToFloat>(weight, weightHalf, maskF16);
+        Reg::Cast<float, half, kHalfToFloat>(qScaleFloat, qScaleHalf, maskF16);
+        Reg::Mul(weightScaled, weight, qScaleFloat, maskF32);
+        Reg::Cast<half, float, kFloatToHalfRint>(weightScaledHalf, weightScaled, maskF32);
+        Reg::Cast<float, half, kHalfToFloat>(weightScaled, weightScaledHalf, maskF16);
 
-    Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(keyScaleHalf[0], kScale);
-    Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(keyScaleHalf[1], kScale + kQueryHeads);
-    Reg::Cast<float, half, kHalfToFloat>(keyScale[0], keyScaleHalf[0], maskF16);
-    Reg::Cast<float, half, kHalfToFloat>(keyScale[1], keyScaleHalf[1], maskF16);
+        Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(keyScaleHalf[0], kScale);
+        Reg::LoadAlign<half, Reg::LoadDist::DIST_UNPACK_B16>(keyScaleHalf[1], kScale + kS2Tile / 2);
+        Reg::Cast<float, half, kHalfToFloat>(keyScale[0], keyScaleHalf[0], maskF16);
+        Reg::Cast<float, half, kHalfToFloat>(keyScale[1], keyScaleHalf[1], maskF16);
+    } else {
+        Reg::LoadAlign<float>(weight, weights);
+        Reg::LoadAlign<float>(qScaleFloat, qScale);
+        Reg::Mul(weightScaled, weight, qScaleFloat, maskF32);
+        Reg::LoadAlign<float>(keyScale[0], kScale);
+        Reg::LoadAlign<float>(keyScale[1], kScale + kS2Tile / 2);
+    }
 
-    for (uint16_t head = 0; head < kQueryHeads; ++head) {
-        Reg::LoadAlign<int32_t>(qkInt[0], qk + head * kQkHeadStride);
-        Reg::LoadAlign<int32_t>(qkInt[1], qk + kQkSecondBankOffset + head * kQkHeadStride);
-        Reg::Cast<float, int32_t, kInt32ToFloat>(qkFloat[0], qkInt[0], maskF32);
-        Reg::Cast<float, int32_t, kInt32ToFloat>(qkFloat[1], qkInt[1], maskF32);
-        Reg::Muls(qkFloat[0], qkFloat[0], kInt32Scale, maskF32);
-        Reg::Muls(qkFloat[1], qkFloat[1], kInt32Scale, maskF32);
-        Reg::Cast<half, float, kFloatToHalfRint>(qkHalf[0], qkFloat[0], maskF32);
-        Reg::Cast<half, float, kFloatToHalfRint>(qkHalf[1], qkFloat[1], maskF32);
-        Reg::Cast<float, half, kHalfToFloat>(qkFloat[0], qkHalf[0], maskF16);
-        Reg::Cast<float, half, kHalfToFloat>(qkFloat[1], qkHalf[1], maskF16);
+    for (uint16_t head = 0; head < headCount; ++head) {
+        if constexpr (std::is_same_v<QkT, int32_t>) {
+            Reg::LoadAlign<int32_t>(qkInt[0], qk + head * kQkHeadStride);
+            Reg::LoadAlign<int32_t>(qkInt[1], qk + kQkSecondBankOffset + head * kQkHeadStride);
+            Reg::Cast<float, int32_t, kInt32ToFloat>(qkFloat[0], qkInt[0], maskF32);
+            Reg::Cast<float, int32_t, kInt32ToFloat>(qkFloat[1], qkInt[1], maskF32);
+            Reg::Muls(qkFloat[0], qkFloat[0], kInt32Scale, maskF32);
+            Reg::Muls(qkFloat[1], qkFloat[1], kInt32Scale, maskF32);
+            Reg::Cast<half, float, kFloatToHalfRint>(qkHalf[0], qkFloat[0], maskF32);
+            Reg::Cast<half, float, kFloatToHalfRint>(qkHalf[1], qkFloat[1], maskF32);
+            Reg::Cast<float, half, kHalfToFloat>(qkFloat[0], qkHalf[0], maskF16);
+            Reg::Cast<float, half, kHalfToFloat>(qkFloat[1], qkHalf[1], maskF16);
+        } else {
+            Reg::LoadAlign<float>(qkFloat[0], qk + head * kQkHeadStride);
+            Reg::LoadAlign<float>(qkFloat[1], qk + kQkSecondBankOffset + head * kQkHeadStride);
+        }
         Reg::Relu(qkFloat[0], qkFloat[0], maskF32);
         Reg::Relu(qkFloat[1], qkFloat[1], maskF32);
         liV2Vector1::BroadcastLane(weightBroadcast, weightScaled, head);
@@ -104,15 +117,16 @@ __simd_vf__ void ComputeScoresVF(__ubuf__ float *out, __ubuf__ int32_t *qk, __ub
 
 }
 
+template <typename QkT, typename ScaleT>
 __aicore__ inline void ComputeScores(const AscendC::LocalTensor<float> &out,
-                                     const AscendC::LocalTensor<int32_t> &qk,
-                                     const AscendC::LocalTensor<half> &weights,
-                                     const AscendC::LocalTensor<half> &qScale,
-                                     const AscendC::LocalTensor<half> &kScale)
+                                     const AscendC::LocalTensor<QkT> &qk,
+                                     const AscendC::LocalTensor<ScaleT> &weights,
+                                     const AscendC::LocalTensor<ScaleT> &qScale,
+                                     const AscendC::LocalTensor<ScaleT> &kScale, uint16_t headCount)
 {
-    detail::ComputeScoresVF((__ubuf__ float *)out.GetPhyAddr(), (__ubuf__ int32_t *)qk.GetPhyAddr(),
-                            (__ubuf__ half *)weights.GetPhyAddr(), (__ubuf__ half *)qScale.GetPhyAddr(),
-                            (__ubuf__ half *)kScale.GetPhyAddr());
+    detail::ComputeScoresVF((__ubuf__ float *)out.GetPhyAddr(), (__ubuf__ QkT *)qk.GetPhyAddr(),
+                            (__ubuf__ ScaleT *)weights.GetPhyAddr(), (__ubuf__ ScaleT *)qScale.GetPhyAddr(),
+                            (__ubuf__ ScaleT *)kScale.GetPhyAddr(), headCount);
 }
 
 }

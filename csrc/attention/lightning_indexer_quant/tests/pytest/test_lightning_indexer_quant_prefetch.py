@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from lightning_indexer_quant_prefetch_golden import assert_contract, compute_expected
 from prefetch_test_assertions import _assert_id_sets_equal, _assert_selected_and_rows, _assert_stats
-from prefetch_test_cases import _make_case, _run, _runtime
+from prefetch_test_cases import DType, _make_case, _run, _runtime
 
 pytestmark = pytest.mark.npu
 
@@ -127,7 +127,7 @@ def test_prefetch_all_negative_scores_with_radix_tail(memfabric_offload: ModuleT
     torch = _runtime()
     case = _make_case(
         torch,
-        threshold=-0.125,
+        threshold=-0.0625,
         budget=4,
         lengths=(129,),
         physical=12,
@@ -145,10 +145,10 @@ def test_prefetch_all_negative_scores_with_radix_tail(memfabric_offload: ModuleT
             weights=case.weights.cpu().numpy(),
         )
     )
-    actual = _run(torch, case, threshold=-0.125, budget=4)
+    actual = _run(torch, case, threshold=-0.0625, budget=4)
     expected = compute_expected(case.golden)
     _assert_selected_and_rows(actual, case, expected)
-    assert np.all(expected.scores[0] == np.float32(-0.25))
+    assert np.all(expected.scores[0] == np.float32(-0.125))
     assert tuple(expected.stats[0]) == (0, 7)
 
 
@@ -245,11 +245,27 @@ def test_prefetch_batch_larger_than_one_core(memfabric_offload: ModuleType | Non
     _assert_selected_and_rows(actual, case, expected)
 
 
-def test_prefetch_event_latency(pytestconfig: pytest.Config, memfabric_offload: ModuleType | None) -> None:
+@pytest.mark.parametrize("dtype", ["int8", "fp8"])
+def test_prefetch_event_latency(
+    pytestconfig: pytest.Config, dtype: DType, memfabric_offload: ModuleType | None
+) -> None:
     if not pytestconfig.getoption("--benchmark"):
         pytest.skip("pass --benchmark to collect NPU event timings")
     torch = _runtime()
-    case = _make_case(torch, threshold=-np.inf, budget=4, offload=memfabric_offload)
+    case = _make_case(
+        torch,
+        threshold=-np.inf,
+        budget=4,
+        lengths=(4097,),
+        physical=37,
+        block_size=128,
+        sparse_count=2048,
+        row_bytes=1152,
+        quantized_inputs=dtype == "int8",
+        dtype=dtype,
+        negative_weights=dtype == "fp8",
+        offload=memfabric_offload,
+    )
     threshold_tensor = torch.full((case.query.size(0),), -np.inf, dtype=torch.float32, device="npu")
     for budget in (0, 4):
         for _ in range(5):
@@ -264,4 +280,7 @@ def test_prefetch_event_latency(pytestconfig: pytest.Config, memfabric_offload: 
             end.record()
             end.synchronize()
             samples.append(start.elapsed_time(end))
-        print(f"prefetch_event_ms budget={budget} min={min(samples):.4f} avg={sum(samples) / len(samples):.4f}")
+        print(
+            f"prefetch_event_ms dtype={dtype} budget={budget} "
+            f"min={min(samples):.4f} avg={sum(samples) / len(samples):.4f}"
+        )

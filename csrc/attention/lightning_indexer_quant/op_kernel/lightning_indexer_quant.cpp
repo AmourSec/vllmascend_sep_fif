@@ -50,7 +50,10 @@ __global__ __aicore__ void lightning_indexer_quant(__gm__ uint8_t *query, __gm__
     TPipe tPipe;
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
     GET_TILING_DATA_WITH_STRUCT(LIQTilingData, tilingData, tiling);
-    LIQ950::DecodePrefetch op;
+    using QueryT = std::conditional_t<DT_Q == LI_TPL_FLOAT8_E4M3FN, fp8_e4m3fn_t, int8_t>;
+    using QkT = std::conditional_t<DT_Q == LI_TPL_FLOAT8_E4M3FN, float, int32_t>;
+    using ScaleT = std::conditional_t<DT_Q == LI_TPL_FLOAT8_E4M3FN, float, half>;
+    LIQ950::DecodePrefetch<QueryT, QkT, ScaleT> op;
     op.Init(query, key, weights, queryScale, keyScale, actualSeqLengthsQ, actualSeqLengthsK,
         blocktable, kvAddresses, prefetchThreshold, sparseIndices, gatheredKv, prefetchIndices,
         prefetchStats, nextThreshold, GetUserWorkspace(workspace), &tilingData, &tPipe);

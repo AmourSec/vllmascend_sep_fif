@@ -401,18 +401,20 @@ function(add_ops_src_copy)
     endif()
 
     if(NOT BUILD_OPS_RTY_KERNEL AND BELONG_MC2_OPS)
-        file(GLOB SRC_FILES ${SRC_COPY_SRC}/* ${SRC_COPY_SRC}/op_kernel/*)
+        file(GLOB SRC_FILES CONFIGURE_DEPENDS ${SRC_COPY_SRC}/* ${SRC_COPY_SRC}/op_kernel/*)
     else()
-        file(GLOB SRC_FILES ${SRC_COPY_SRC}/*)
+        file(GLOB SRC_FILES CONFIGURE_DEPENDS ${SRC_COPY_SRC}/*)
     endif()
     list(FILTER SRC_FILES EXCLUDE REGEX "op_host")
-    file(
-        GLOB_RECURSE SRC_COPY_DEP_FILES
-        CONFIGURE_DEPENDS
-        LIST_DIRECTORIES false
-        "${SRC_COPY_SRC}/*"
-    )
-    list(FILTER SRC_COPY_DEP_FILES EXCLUDE REGEX "/op_host/")
+    set(SRC_COPY_INPUTS)
+    foreach(_source ${SRC_FILES})
+        if (IS_DIRECTORY "${_source}")
+            file(GLOB_RECURSE _source_inputs CONFIGURE_DEPENDS LIST_DIRECTORIES false "${_source}/*")
+            list(APPEND SRC_COPY_INPUTS ${_source_inputs})
+        else()
+            list(APPEND SRC_COPY_INPUTS "${_source}")
+        endif()
+    endforeach()
 
     get_filename_component(PARENT_PTH "${SRC_COPY_SRC}" DIRECTORY)
     get_filename_component(CUR_NAME "${SRC_COPY_SRC}" NAME)
@@ -431,20 +433,21 @@ function(add_ops_src_copy)
                     COMMAND cp -rf ${SRC_FILES} ${SRC_COPY_DST}
                     COMMAND rm -rf ${SRC_COPY_DST}/op_kernel/
                     COMMAND touch ${_BUILD_FLAG}
-                    DEPENDS ${SRC_COPY_DEP_FILES}
+                    DEPENDS ${SRC_COPY_INPUTS}
             )
         else()
             add_custom_command(OUTPUT ${_BUILD_FLAG}
                     COMMAND mkdir -p ${SRC_COPY_DST}
                     COMMAND cp -rf ${SRC_FILES} ${SRC_COPY_DST}
                     COMMAND touch ${_BUILD_FLAG}
-                    DEPENDS ${SRC_COPY_DEP_FILES}
+                    DEPENDS ${SRC_COPY_INPUTS}
             )
         endif()
 
         add_custom_target(${DOING_TARGET_NAME}
                 DEPENDS ${_BUILD_FLAG}
         )
+        set_property(TARGET ${DOING_TARGET_NAME} PROPERTY ASCEND_OP_SOURCE_FILES "${SRC_COPY_INPUTS}")
     endif ()
 
     if (TARGET ${OPS_UTILS_INC_KERNEL_TARGET})
@@ -453,6 +456,8 @@ function(add_ops_src_copy)
 
     if (DEFINED SRC_COPY_BE_RELIED)
         add_dependencies(${SRC_COPY_BE_RELIED} ${DOING_TARGET_NAME})
+        get_target_property(_dependency_inputs ${DOING_TARGET_NAME} ASCEND_OP_SOURCE_FILES)
+        set_property(TARGET ${SRC_COPY_BE_RELIED} APPEND PROPERTY ASCEND_OP_SOURCE_FILES "${_dependency_inputs}")
     endif ()
 
 endfunction()
@@ -544,6 +549,7 @@ function(add_bin_compile_target)
             set(DYNAMIC_PY_FILE ${OP_SRC_OUT_DIR}/${op_type}.py)
             add_custom_command(OUTPUT ${DYNAMIC_PY_FILE}
                     COMMAND cp -rf ${ASCEND_IMPL_OUT_DIR}/dynamic/${op_file}.py ${DYNAMIC_PY_FILE}
+                    DEPENDS ${ASCEND_IMPL_OUT_DIR}/dynamic/${op_file}.py
                     # COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cmake/scripts/update_get_kernel_source.sh ${DYNAMIC_PY_FILE}
             )
 
@@ -630,9 +636,11 @@ function(add_bin_compile_target)
                 list(APPEND _BUILD_COMMAND && echo $(MAKE))
             endif()
 
+            get_target_property(_kernel_source_inputs ${OP_TARGET_NAME}_src_copy ASCEND_OP_SOURCE_FILES)
             add_custom_command(OUTPUT ${_BUILD_FLAG}
                     COMMAND ${_BUILD_COMMAND}
                     COMMAND touch ${_BUILD_FLAG}
+                    DEPENDS ${_kernel_source_inputs} ${DYNAMIC_PY_FILE} ${bin_script}
                     WORKING_DIRECTORY ${GEN_OUT_DIR}
             )
 

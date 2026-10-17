@@ -76,6 +76,14 @@ extension, including the new binding and expanded generated ACLNN signature.
 An older extension or OPP library is incompatible with the expanded signature.
 The build script's `--soc=ascend950` selector resolves to Ascend950PR_9599.
 
+An `EZ1009` dtype/format mismatch can occur before kernel execution if the
+installed common OpDef prototype lacks FP8/FP32 even when the 950 kernel
+configuration accepts them. Both declarations must include the dtype pair.
+After changing `op_host/lightning_indexer_quant_def.cpp`, rebuild and install
+the custom OPP package, including its operator prototype library; rebuilding
+only the Torch extension cannot update that prototype. Rerun pytest in a new
+Python process after installation.
+
 To diagnose only the kernel build, run `bash build.sh --pkg --soc=ascend950
 --ops=lightning_indexer_quant -j32` from `csrc/`; its installer is emitted under
 `csrc/build/`. This diagnostic alone does not rebuild the Torch binding.

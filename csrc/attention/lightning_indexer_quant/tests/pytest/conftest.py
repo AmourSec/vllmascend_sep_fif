@@ -14,6 +14,9 @@ if TYPE_CHECKING:
 def pytest_addoption(parser: Parser) -> None:
     parser.addoption("--source", choices=("hbm", "host"), default="hbm")
     parser.addoption("--benchmark", action="store_true", default=False)
+    parser.addoption(
+        "--cann-template-include", help="Include root containing ascendc/host_api/tiling/template_argument.h"
+    )
 
 
 @pytest.fixture

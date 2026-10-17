@@ -284,6 +284,10 @@ log_selected_ops
   bash build.sh --pkg --ops="${CUSTOM_OPS}" --soc="${SOC_ARG}"
   log "build.sh finished"
 
+  if [[ "${SOC_ARG}" == "ascend950" ]]; then
+    python3 attention/lightning_indexer_quant/check_kernel_metadata.py build/binary/ascend950/bin
+  fi
+
   custom_ops_install_dir="${ROOT_DIR}/vllm_ascend/_cann_ops_custom"
   log "custom_ops_install_dir=${custom_ops_install_dir}"
 
@@ -314,6 +318,9 @@ log_selected_ops
     chmod u+w "${custom_ops_install_dir}/vendors/custom_transformer/scripts"
   fi
   log "installer finished"
+  if [[ "${SOC_ARG}" == "ascend950" ]]; then
+    python3 attention/lightning_indexer_quant/check_kernel_metadata.py "${custom_ops_install_dir}"
+  fi
   log "installed files under ${custom_ops_install_dir} (maxdepth=4, first 120 entries):"
   { find "${custom_ops_install_dir}" -mindepth 1 -maxdepth 4 -print | sort | head -n 120 | sed 's#^#[build_aclnn] install: #'; } || true
 

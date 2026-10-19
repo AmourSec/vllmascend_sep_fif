@@ -33,6 +33,67 @@ The standalone call does not implement prefill inter-query prediction or a
 persistent LRU cache. Its workspace is private to the call. The caller carries
 `next_threshold` to the next invocation for the same request and layer.
 
+## Carrying EMA state across decode steps
+
+Section 5.1 of the paper updates the prediction once per decode step:
+`threshold[t+1] = alpha * threshold[t] + (1 - alpha) * kth_score[t]`.
+The input prediction stays fixed while this step's key tiles are scored. The
+actual kth score is available after exact TopK finishes; it then updates the
+prediction for the next step. Updating the prediction after every tile would
+be a different algorithm.
+
+The operator returns this update in output 4, `next_threshold`. It neither
+mutates `prefetch_threshold` nor retains hidden state between calls. Passing
+the same input threshold repeatedly and discarding output 4 therefore does
+not implement the recurrence. In eager execution, feed that output directly
+into the next call:
+
+```python
+def prefetch_step(threshold):
+    return torch.ops._C_ascend.npu_lightning_indexer_quant_prefetch(
+        query, key, weights, query_dequant_scale, key_dequant_scale,
+        actual_seq_lengths_query, actual_seq_lengths_key, block_table,
+        kv_addresses, threshold, kv_row_bytes, prefetch_budget,
+        sparse_count=2048, ema_decay=0.5,
+    )
+
+
+threshold = torch.full((query.shape[0],), float("-inf"),
+                       dtype=torch.float32, device=query.device)
+for step in range(num_decode_steps):
+    # Supply this step's query, weights, scales, lengths and KV metadata.
+    indices, rows, candidates, stats, threshold = prefetch_step(threshold)
+```
+
+For an NPU graph, keep the threshold buffer at a fixed address and capture
+the feedback copy along with the operator. Reassigning a Python variable
+outside the captured graph does not change the tensor address used on replay:
+
+```python
+threshold = torch.full((query.shape[0],), float("-inf"),
+                       dtype=torch.float32, device=query.device)
+prefetch_step(threshold)  # Warm up without advancing the threshold state.
+torch.npu.synchronize()
+graph = torch.npu.NPUGraph()
+with torch.npu.graph(graph):
+    captured = prefetch_step(threshold)
+    threshold.copy_(captured[4])
+
+# Capture/warmup must not consume a real decode step's prediction.
+threshold.fill_(float("-inf"))
+torch.npu.synchronize()
+for step in range(num_decode_steps):
+    # Update the captured input buffers in place on the same stream.
+    graph.replay()
+```
+
+Keep independent state for each request and indexer layer. If batch slots are
+reordered, move their threshold state with them; reset a slot when it receives
+a new request. A non-finite initial prediction is seeded from the first full
+TopK result. Short or empty requests preserve their previous state until K
+keys are available. Budget zero still computes and returns the EMA update.
+HBM and MemFabric Host sources use the same state contract.
+
 ## 950 execution
 
 One AIC and its paired AIVs handle each request, with strided request assignment

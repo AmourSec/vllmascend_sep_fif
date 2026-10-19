@@ -58,6 +58,15 @@ and capped by the per-request budget. The selected top-k set must remain valid
 when threshold or budget changes. EMA checks use the actual kth score with the
 specified cold-start and non-finite-threshold behavior.
 
+The continuous EMA regressions feed `next_threshold` back across four decode
+steps with rising and falling scores. They use GLM-5.2's 32 heads, dimension
+128, and TopK=2048 for both INT8 and FP8, with exact analytical scores. They
+check per-request threshold history, admission against the previous prediction,
+and preservation of short/empty requests' state. The graph variant captures
+`threshold.copy_(next_threshold)` so each replay advances the persistent state.
+See [the EMA usage examples](../../PREFETCH.md#carrying-ema-state-across-decode-steps)
+for eager and graph call patterns. The operator itself does not retain state.
+
 ## Build and run on an Ascend server
 
 Use the server's compatible CANN/driver/torch-npu installation. CANN 9.2 is the
@@ -117,6 +126,13 @@ python3 -m pytest -q --source=host
 
 Both commands include the INT8 and FP8 GLM-5.2 cases. For only the new profile
 and dtype checks, append `test_lightning_indexer_quant_prefetch_glm52.py`.
+
+To run only the continuous EMA regressions:
+
+```bash
+python3 -m pytest -q --source=hbm test_lightning_indexer_quant_prefetch_ema.py
+python3 -m pytest -q --source=host test_lightning_indexer_quant_prefetch_ema.py
+```
 
 For score mismatches, first run the deterministic head-mapping regression:
 

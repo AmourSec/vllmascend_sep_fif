@@ -1,7 +1,8 @@
-# Ascend 950 standalone decode KV prefetch
+# Ascend 950 QLI decode and MTP KV prefetch
 
 This implementation extends `LightningIndexerQuant` and exposes
-`torch.ops._C_ascend.npu_lightning_indexer_quant_prefetch`. It does not change
+`torch.ops._C_ascend.npu_lightning_indexer_quant_prefetch` and
+`torch.ops._C_ascend.npu_lightning_indexer_quant_prefetch_resident`. It does not change
 the model, scheduler, offload manager, or attention integration. Build and test
 instructions are in [tests/pytest/README.md](tests/pytest/README.md).
 
@@ -15,9 +16,9 @@ The algorithm adapts the decode intra-query prefetch in
    `prefetch_budget` candidates in logical token order.
 2. Independently retain exact FP32 TopK through bounded streaming selection.
    Speculative admission does not prune scores or alter TopK selection.
-3. Gather the selected rows from staging when present; otherwise fetch the
-   original row. The returned row at position `i` always corresponds to the
-   returned index at position `i`.
+3. In standalone mode, gather the selected rows from staging when present;
+   otherwise fetch the original row. In resident mode, copy only candidate
+   misses into the caller's K/V cache and update its LRU metadata.
 4. Return the next threshold as `ema_decay * old + (1 - ema_decay) * kth_score`.
    A non-finite old threshold is replaced by the actual kth score. A request
    with fewer than K visible keys preserves its old threshold.
@@ -26,8 +27,10 @@ TopK order and the choice among equal boundary scores are unspecified. Indices
 are logical token positions, never physical block IDs. Unused index entries
 are `-1`; unused gathered rows are zero. A NaN threshold admits no candidates,
 `+inf` admits no finite score, and `-inf` admits all finite scores until budget
-is exhausted. Budget zero executes the same exact score/TopK/gather path with
-all valid selected rows counted as fallback copies.
+is exhausted. With budget zero, standalone mode executes the same exact
+score/TopK/gather path with all valid selected rows counted as fallback copies.
+Resident mode still computes TopK and maintains row metadata but performs no
+candidate payload transfers.
 
 The standalone call does not implement prefill inter-query prediction or a
 persistent LRU cache. Its workspace is private to the call. The caller carries
@@ -35,8 +38,9 @@ persistent LRU cache. Its workspace is private to the call. The caller carries
 
 ## 950 execution
 
-One AIC and its paired AIVs handle each request, with strided request assignment
-when the batch exceeds the physical AIC count. The existing local QLI-V2
+One AIC and its paired AIVs handle each query row, with strided row assignment
+when the query count exceeds the physical AIC count. Each MTP query uses its
+request's page table and its own causal visible length. The existing local QLI-V2
 Cube service supplies QK tiles directly to AIV UB using 950 FIX dual destination
 and mode-4 events. AIV0 computes scores and copies KV rows; AIV1 acknowledges
 its unused half of the QK tile. The AIV returns the QK-buffer credit before
@@ -51,11 +55,11 @@ sum, and FP32 key scales, without the INT8 division or FP16 round-trips. Inputs 
 finite scores. All input heads (32 or 64) participate. TopK uses the existing FP32 radix
 selector with ordered float-bit keys and bounded UB buffers.
 
-Each speculative row is completely copied from its source through UB into HBM
-staging before its candidate ID is published. Candidate IDs are increasing, so
+In standalone mode, candidate IDs record admitted rows while DMA is pending.
+The final gather drains both copy banks before reading HBM staging. Candidate IDs are increasing, so
 final lookup uses binary search. There is no eviction or cross-core shared slot
 state. Request staging strides are padded to 512 bytes. Workspace scales as
-`B * align512(max(1,budget) * align32(row_bytes))`, plus runtime workspace.
+`T * align512(max(1,budget) * align32(row_bytes))`, plus runtime workspace.
 
 This is a functional first version, not a demonstrated speedup. Small batches
 use only a small number of Cube cores. Scalar candidate scanning, serial row
@@ -65,22 +69,93 @@ core assignment, transfer batching, or integrating with attention.
 
 ## Input and lifetime contract
 
-- Q: contiguous `[B,H,128]`, H is 32 or 64, TND, exactly one decode query per request.
+- Q: contiguous `[T,H,128]`, H is 32 or 64, TND. `T` is the total number of
+  query rows; `N` is the number of requests. A request may have multiple queries.
 - K: contiguous `[physical_blocks,block_size,1,128]`, PA_BSND, with the same dtype as Q.
   Block size is a positive multiple of 16, at most 1024.
 - Q/K dtype is INT8 with FP16 weights/scales, or FP8 E4M3FN with FP32 weights/scales.
   Mixed dtype combinations and other FP8 formats are rejected.
-- Weights and Q scales: `[B,H]`; K scales: `[physical_blocks,block_size,1]`.
-- Query lengths: INT32 cumulative TND ends `[1,2,...,B]`.
-  Key lengths: INT32 per-request visible lengths `[B]`, not cumulative.
-- Block table: INT32 `[B,max_blocks]`. Only pages covering the visible key
+- Weights and Q scales: `[T,H]`; K scales: `[physical_blocks,block_size,1]`.
+- Query lengths: INT32 nondecreasing cumulative TND ends `[N]`, ending at `T`
+  in standalone mode. Equal adjacent ends represent empty requests.
+  Key lengths: INT32 per-request final lengths `[N]`, not cumulative.
+  For request `b` with `q` queries, local query `j` sees `key_length[b] - q + j + 1`
+  tokens. For example, query ends `[2,3]` and key lengths `[5,7]` produce
+  visible lengths `[4,5,7]`. A single-query empty-KV row remains supported.
+- Block table: INT32 `[N,max_blocks]`. Only pages covering the visible key
   length need valid physical block IDs.
-- Addresses: INT64 `[B,max_blocks * block_size]`, stored on the NPU. Each valid
+- Addresses: INT64 `[N,max_blocks * block_size]`, stored on the NPU. Each valid
   element points to a contiguous `kv_row_bytes` payload row in HBM or mapped
   host memory. Payload is independent of the indexer's quantized K tensor.
-- Thresholds: FLOAT32 `[B]`, stored on the NPU. All tensor inputs are on the
+- Thresholds: FLOAT32 `[T]`, stored on the NPU. All tensor inputs are on the
   same NPU. K is 1..2048, budget is 0..2048, row bytes is 1..4096, and EMA decay
   is finite in `[0,1)`.
+
+## Resident cache mode
+
+The resident entry point receives the existing offload manager's K/V buffers
+and the same per-layer `last_req_ids`, `slot_to_token` and `lru_slots` tensors.
+It mutates them in place. It does not allocate a second persistent cache.
+The Python runtime is not wired to this entry point by this change; a caller
+or the integration tests must supply these existing buffers.
+
+```python
+sparse_indices, candidates, stats, next_threshold = (
+    torch.ops._C_ascend.npu_lightning_indexer_quant_prefetch_resident(
+        query, key, weights, query_scale, key_scale,
+        cumulative_query_lengths, final_key_lengths, indexer_block_table,
+        threshold, req_ids, token_to_req, stable_prefix_lens,
+        host_block_table, host_cache_bases, resident_k, resident_v,
+        last_req_ids, slot_to_token, lru_slots, active_rows,
+        host_block_size, host_num_blocks, prefetch_budget, sparse_count, ema_decay,
+    )
+)
+```
+
+- `req_ids` is INT64 `[N]`; `token_to_req` and `stable_prefix_lens` are INT32
+  `[T]`. The row-to-request map must agree with cumulative query lengths.
+- `active_rows` is an INT32 device tensor `[1]`. The final cumulative query
+  endpoint equals its value and may be smaller than the allocated query count.
+  Inactive rows keep persistent state unchanged, return `-1` indices and zero
+  statistics, and preserve their threshold.
+- Resident K/V are contiguous byte tensors `[R,C,Kbytes]` / `[R,C,Vbytes]`,
+  or native contiguous `[R,C,1,D]` tensors reinterpreted as byte views without
+  copying. `R >= T`; each query row owns its own cache row, including MTP rows
+  belonging to the same request. K/V widths may differ and are each 1..4096 bytes.
+- `last_req_ids` is INT64 `[R]`; `slot_to_token` and `lru_slots` are INT32
+  `[R,C]`. LRU rows are permutations of `[0,C)` ordered oldest to newest.
+  Supply the manager's initialized metadata, not uninitialized tensors.
+- `host_block_table` is INT32 `[N,host_max_blocks]`, separate from the indexer
+  page table. `host_cache_bases` is INT64 `[2]` containing NPU-accessible K/V
+  source base addresses. On 950 DDR sources must use mapped device addresses.
+  Source layout is contiguous `[host_num_blocks,host_block_size,row_bytes]`
+  separately for K and V. The host and indexer block sizes may differ.
+- Budget is 0..min(2048,C); TopK is 1..min(2048,C). Resident statistics are
+  `[admitted_candidates, transferred_misses]`; standalone statistics retain
+  `[admitted_candidates, final_gather_fallbacks]`.
+
+Before prefetch, a changed request identity resets the cache row. Existing
+tokens outside the stable prefix are invalidated once, following SparseKvPlan.
+Tail tokens can still be candidates and be fetched again in this invocation.
+For each score tile, hits are protected before choosing victims for misses.
+All admitted slots stay protected through the call, including pending copies.
+Victims follow the original LRU order; at completion the order is unused
+slots, newly fetched misses, then original hits, preserving order within each
+group. A future candidate may already have been evicted by an earlier tile and
+need another fetch. Streaming admission cannot know the final candidate set in
+advance and is not equivalent to one batch Plan over that entire set.
+
+Both K and V must finish copying before a newly filled slot is published as
+valid. Metadata and payload writes finish before the operator returns. Run the
+unchanged post-TopK Plan/Transfer on the same stream, or establish an equivalent
+dependency. It computes final `current_slots` and fetches remaining misses.
+It may invalidate and fetch mutable-tail tokens again; that duplicate work is
+intentionally retained. This API does not gather TopK bytes into a separate
+output tensor.
+
+Resident workspace is `T * align512(3*C*4)` bytes plus runtime slack. Capacity
+dependent policy state stays in workspace rather than consuming capacity-sized
+UB allocations.
 
 The GLM-5.2 profile uses 32 indexer heads, head dimension 128, and TopK=2048,
 matching the [model configuration](https://huggingface.co/zai-org/GLM-5.2/raw/main/config.json).
@@ -115,17 +190,19 @@ The architecture reference was AIKG's
 The unverified scurny prefetch branch was not used as implementation code.
 
 Invalid device query ends, key lengths, or referenced physical block IDs produce
-an empty padded result for that request, `stats=[-1,-1]`, and an unchanged
+an empty padded result for that query row, `stats=[-1,-1]`, and an unchanged
 threshold. Pointer validity remains the caller's responsibility. Inspect stats
 when using the raw standalone interface.
 
 ## Build compatibility and verification status
 
-The generated ACLNN ABI has two additional optional inputs, three additional
-attributes, and four additional outputs. Rebuild and install both the custom
-OPP package and the PyTorch extension together; an old generated ACLNN library
-is incompatible. The original Python operator signature is retained for
-910B/910_93 through its adapter. The new prefetch API requires Ascend 950.
+Relative to standalone prefetch, the generated ACLNN ABI appends eleven
+optional resident inputs and two host-layout attributes. Its five outputs
+remain unchanged; the resident Torch API hides the internal dummy gather output
+and returns four tensors. Rebuild and install both the custom OPP package and
+the PyTorch extension together; an old generated ACLNN library is incompatible.
+The original Python operator signature is retained for 910B/910_93 through its
+adapter. Both prefetch APIs require Ascend 950.
 
 Development and review were performed on macOS without CANN headers, a device
 compiler, or an NPU. Local Python syntax/reference checks and source review do

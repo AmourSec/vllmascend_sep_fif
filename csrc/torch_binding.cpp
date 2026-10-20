@@ -3698,6 +3698,19 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
              &vllm_ascend::npu_lightning_indexer_quant_prefetch);
 
     ops.def(
+        "npu_lightning_indexer_quant_prefetch_resident(Tensor query, Tensor key, Tensor weights, "
+        "Tensor query_dequant_scale, Tensor key_dequant_scale, Tensor actual_seq_lengths_query, "
+        "Tensor actual_seq_lengths_key, Tensor block_table, Tensor prefetch_threshold, Tensor req_ids, "
+        "Tensor token_to_req, Tensor stable_prefix_lens, Tensor host_block_table, Tensor host_cache_bases, "
+        "Tensor(a!) resident_k, Tensor(b!) resident_v, Tensor(c!) last_req_ids, Tensor(d!) slot_to_token, "
+        "Tensor(e!) lru_slots, Tensor active_rows, int host_block_size, int host_num_blocks, "
+        "int prefetch_budget, int sparse_count=2048, float ema_decay=0.5) -> "
+        "(Tensor sparse_indices, Tensor prefetch_indices, Tensor prefetch_stats, Tensor next_threshold)"
+    );
+    ops.impl("npu_lightning_indexer_quant_prefetch_resident", torch::kPrivateUse1,
+             &vllm_ascend::npu_lightning_indexer_quant_prefetch_resident);
+
+    ops.def(
         "chunk_gated_delta_rule_fwd_h(Tensor k, Tensor w, Tensor u, Tensor? g=None, *, Tensor? gk=None, Tensor? initial_state=None, bool? output_final_state=False, int? chunk_size=None, bool? save_new_value=True, int[]? cu_seqlens=None, int[]? chunk_indices=None, bool? use_exp2=False, bool? transpose_state_layout=False) -> (Tensor h_out, Tensor v_new_out, Tensor final_state_out)"
     );
     ops.impl("chunk_gated_delta_rule_fwd_h", torch::kPrivateUse1, &vllm_ascend::chunk_gated_delta_rule_fwd_h);

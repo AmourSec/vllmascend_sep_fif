@@ -54,6 +54,17 @@ constexpr uint32_t ACTUAL_SEQ_K_INDEX = 6;
 constexpr uint32_t BLOCK_TABLE_INDEX = 7;
 constexpr uint32_t KV_ADDRESSES_INDEX = 8;
 constexpr uint32_t PREFETCH_THRESHOLD_INDEX = 9;
+constexpr uint32_t REQ_IDS_INDEX = 10;
+constexpr uint32_t TOKEN_TO_REQ_INDEX = 11;
+constexpr uint32_t STABLE_PREFIX_LENS_INDEX = 12;
+constexpr uint32_t HOST_BLOCK_TABLE_INDEX = 13;
+constexpr uint32_t HOST_CACHE_BASES_INDEX = 14;
+constexpr uint32_t RESIDENT_K_INDEX = 15;
+constexpr uint32_t RESIDENT_V_INDEX = 16;
+constexpr uint32_t LAST_REQ_IDS_INDEX = 17;
+constexpr uint32_t SLOT_TO_TOKEN_INDEX = 18;
+constexpr uint32_t LRU_SLOTS_INDEX = 19;
+constexpr uint32_t ACTIVE_ROWS_INDEX = 20;
 constexpr uint32_t LIGHTNING_INDEXER_QUANT = 0;
 constexpr uint32_t GATHERED_KV_INDEX = 1;
 constexpr uint32_t PREFETCH_INDICES_INDEX = 2;
@@ -69,6 +80,8 @@ constexpr uint32_t ATTR_SPARSE_MODE_INDEX = 5;
 constexpr uint32_t ATTR_KV_ROW_BYTES_INDEX = 6;
 constexpr uint32_t ATTR_PREFETCH_BUDGET_INDEX = 7;
 constexpr uint32_t ATTR_EMA_DECAY_INDEX = 8;
+constexpr uint32_t ATTR_HOST_BLOCK_SIZE_INDEX = 9;
+constexpr uint32_t ATTR_HOST_NUM_BLOCKS_INDEX = 10;
 // Dim Index
 constexpr uint32_t DIM_IDX_ZERO = 0;
 constexpr uint32_t DIM_IDX_ONE = 1;
@@ -103,6 +116,14 @@ TILING_DATA_FIELD_DEF(uint32_t, prefetchBudget)
 TILING_DATA_FIELD_DEF(float, emaDecay)
 TILING_DATA_FIELD_DEF(uint32_t, isArch35)
 TILING_DATA_FIELD_DEF(uint32_t, keyBlockCount)
+TILING_DATA_FIELD_DEF(uint32_t, queryRows)
+TILING_DATA_FIELD_DEF(uint32_t, residentMode)
+TILING_DATA_FIELD_DEF(uint32_t, residentCapacity)
+TILING_DATA_FIELD_DEF(uint32_t, residentKBytes)
+TILING_DATA_FIELD_DEF(uint32_t, residentVBytes)
+TILING_DATA_FIELD_DEF(uint32_t, hostBlockSize)
+TILING_DATA_FIELD_DEF(uint32_t, hostBlockCount)
+TILING_DATA_FIELD_DEF(uint32_t, hostMaxBlockNum)
 END_TILING_DATA_DEF
 REGISTER_TILING_DATA_CLASS(LightningIndexerQuant, LIQTilingData)
 
@@ -121,18 +142,31 @@ struct LIQParaInfo {
     TilingOptionalParaInfo blockTable = {nullptr, nullptr};
     TilingOptionalParaInfo kvAddresses = {nullptr, nullptr};
     TilingOptionalParaInfo prefetchThreshold = {nullptr, nullptr};
+    TilingOptionalParaInfo reqIds = {nullptr, nullptr};
+    TilingOptionalParaInfo tokenToReq = {nullptr, nullptr};
+    TilingOptionalParaInfo stablePrefixLens = {nullptr, nullptr};
+    TilingOptionalParaInfo hostBlockTable = {nullptr, nullptr};
+    TilingOptionalParaInfo hostCacheBases = {nullptr, nullptr};
+    TilingOptionalParaInfo residentK = {nullptr, nullptr};
+    TilingOptionalParaInfo residentV = {nullptr, nullptr};
+    TilingOptionalParaInfo lastReqIds = {nullptr, nullptr};
+    TilingOptionalParaInfo slotToToken = {nullptr, nullptr};
+    TilingOptionalParaInfo lruSlots = {nullptr, nullptr};
+    TilingOptionalParaInfo activeRows = {nullptr, nullptr};
     TilingRequiredParaInfo attenOut = {nullptr, nullptr};
 
-    const int32_t *queryQuantMode = nullptr;
-    const int32_t *keyQuantMode = nullptr;
+    const int64_t *queryQuantMode = nullptr;
+    const int64_t *keyQuantMode = nullptr;
     const char *layOutQuery = nullptr;
     const char *layOutKey = nullptr;
-    const int32_t *blockSize = nullptr;
-    const int32_t *sparseMode = nullptr;
-    const int32_t *sparseCount = nullptr;
-    const int32_t *kvRowBytes = nullptr;
-    const int32_t *prefetchBudget = nullptr;
+    const int64_t *blockSize = nullptr;
+    const int64_t *sparseMode = nullptr;
+    const int64_t *sparseCount = nullptr;
+    const int64_t *kvRowBytes = nullptr;
+    const int64_t *prefetchBudget = nullptr;
     const float *emaDecay = nullptr;
+    const int64_t *hostBlockSize = nullptr;
+    const int64_t *hostNumBlocks = nullptr;
 };
 
 // -----------算子Tiling入参信息类---------------
@@ -155,6 +189,14 @@ public:
     int32_t blockSize = 0;
     uint32_t maxBlockNumPerBatch = 0;
     uint32_t keyBlockCount = 0;
+    uint32_t queryRows = 0;
+    bool residentMode = false;
+    uint32_t residentCapacity = 0;
+    uint32_t residentKBytes = 0;
+    uint32_t residentVBytes = 0;
+    uint32_t hostBlockSize = 0;
+    uint32_t hostBlockCount = 0;
+    uint32_t hostMaxBlockNum = 0;
     // Mask
     int32_t sparseMode = 0;
     // Others Flag

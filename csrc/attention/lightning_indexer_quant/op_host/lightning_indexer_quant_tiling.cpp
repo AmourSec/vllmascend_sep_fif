@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include "lightning_indexer_quant_host_contract.h"
 
 #include "../op_kernel/lightning_indexer_quant_template_tiling_key.h"
 
@@ -133,6 +134,28 @@ void LIQInfoParser::GetOptionalInputParaInfo()
     opParamInfo_.kvAddresses.desc = context_->GetOptionalInputDesc(KV_ADDRESSES_INDEX);
     opParamInfo_.prefetchThreshold.tensor = context_->GetOptionalInputTensor(PREFETCH_THRESHOLD_INDEX);
     opParamInfo_.prefetchThreshold.desc = context_->GetOptionalInputDesc(PREFETCH_THRESHOLD_INDEX);
+    opParamInfo_.reqIds.tensor = context_->GetOptionalInputTensor(REQ_IDS_INDEX);
+    opParamInfo_.reqIds.desc = context_->GetOptionalInputDesc(REQ_IDS_INDEX);
+    opParamInfo_.tokenToReq.tensor = context_->GetOptionalInputTensor(TOKEN_TO_REQ_INDEX);
+    opParamInfo_.tokenToReq.desc = context_->GetOptionalInputDesc(TOKEN_TO_REQ_INDEX);
+    opParamInfo_.stablePrefixLens.tensor = context_->GetOptionalInputTensor(STABLE_PREFIX_LENS_INDEX);
+    opParamInfo_.stablePrefixLens.desc = context_->GetOptionalInputDesc(STABLE_PREFIX_LENS_INDEX);
+    opParamInfo_.hostBlockTable.tensor = context_->GetOptionalInputTensor(HOST_BLOCK_TABLE_INDEX);
+    opParamInfo_.hostBlockTable.desc = context_->GetOptionalInputDesc(HOST_BLOCK_TABLE_INDEX);
+    opParamInfo_.hostCacheBases.tensor = context_->GetOptionalInputTensor(HOST_CACHE_BASES_INDEX);
+    opParamInfo_.hostCacheBases.desc = context_->GetOptionalInputDesc(HOST_CACHE_BASES_INDEX);
+    opParamInfo_.residentK.tensor = context_->GetOptionalInputTensor(RESIDENT_K_INDEX);
+    opParamInfo_.residentK.desc = context_->GetOptionalInputDesc(RESIDENT_K_INDEX);
+    opParamInfo_.residentV.tensor = context_->GetOptionalInputTensor(RESIDENT_V_INDEX);
+    opParamInfo_.residentV.desc = context_->GetOptionalInputDesc(RESIDENT_V_INDEX);
+    opParamInfo_.lastReqIds.tensor = context_->GetOptionalInputTensor(LAST_REQ_IDS_INDEX);
+    opParamInfo_.lastReqIds.desc = context_->GetOptionalInputDesc(LAST_REQ_IDS_INDEX);
+    opParamInfo_.slotToToken.tensor = context_->GetOptionalInputTensor(SLOT_TO_TOKEN_INDEX);
+    opParamInfo_.slotToToken.desc = context_->GetOptionalInputDesc(SLOT_TO_TOKEN_INDEX);
+    opParamInfo_.lruSlots.tensor = context_->GetOptionalInputTensor(LRU_SLOTS_INDEX);
+    opParamInfo_.lruSlots.desc = context_->GetOptionalInputDesc(LRU_SLOTS_INDEX);
+    opParamInfo_.activeRows.tensor = context_->GetOptionalInputTensor(ACTIVE_ROWS_INDEX);
+    opParamInfo_.activeRows.desc = context_->GetOptionalInputDesc(ACTIVE_ROWS_INDEX);
 }
 
 void LIQInfoParser::GetInputParaInfo()
@@ -166,15 +189,17 @@ ge::graphStatus LIQInfoParser::GetAttrParaInfo()
     opParamInfo_.layOutQuery = attrs->GetStr(ATTR_QUERY_LAYOUT_INDEX);
     opParamInfo_.layOutKey = attrs->GetStr(ATTR_KEY_LAYOUT_INDEX);
 
-    opParamInfo_.queryQuantMode = attrs->GetAttrPointer<int32_t>(ATTR_QUERY_QUANT_MODE_INDEX);
-    opParamInfo_.keyQuantMode = attrs->GetAttrPointer<int32_t>(ATTR_KEY_QUANT_MODE_INDEX);
+    opParamInfo_.queryQuantMode = attrs->GetInt(ATTR_QUERY_QUANT_MODE_INDEX);
+    opParamInfo_.keyQuantMode = attrs->GetInt(ATTR_KEY_QUANT_MODE_INDEX);
     opParamInfo_.layOutQuery = attrs->GetStr(ATTR_QUERY_LAYOUT_INDEX);
     opParamInfo_.layOutKey = attrs->GetStr(ATTR_KEY_LAYOUT_INDEX);
-    opParamInfo_.sparseCount = attrs->GetAttrPointer<int32_t>(ATTR_SPARSE_COUNT_INDEX);
-    opParamInfo_.sparseMode = attrs->GetAttrPointer<int32_t>(ATTR_SPARSE_MODE_INDEX);
-    opParamInfo_.kvRowBytes = attrs->GetAttrPointer<int32_t>(ATTR_KV_ROW_BYTES_INDEX);
-    opParamInfo_.prefetchBudget = attrs->GetAttrPointer<int32_t>(ATTR_PREFETCH_BUDGET_INDEX);
+    opParamInfo_.sparseCount = attrs->GetInt(ATTR_SPARSE_COUNT_INDEX);
+    opParamInfo_.sparseMode = attrs->GetInt(ATTR_SPARSE_MODE_INDEX);
+    opParamInfo_.kvRowBytes = attrs->GetInt(ATTR_KV_ROW_BYTES_INDEX);
+    opParamInfo_.prefetchBudget = attrs->GetInt(ATTR_PREFETCH_BUDGET_INDEX);
     opParamInfo_.emaDecay = attrs->GetAttrPointer<float>(ATTR_EMA_DECAY_INDEX);
+    opParamInfo_.hostBlockSize = attrs->GetInt(ATTR_HOST_BLOCK_SIZE_INDEX);
+    opParamInfo_.hostNumBlocks = attrs->GetInt(ATTR_HOST_NUM_BLOCKS_INDEX);
 
     if (opParamInfo_.layOutQuery != nullptr) {
         OPS_LOG_I(context_->GetNodeName(), "layout_query is:%s", opParamInfo_.layOutQuery);
@@ -183,16 +208,16 @@ ge::graphStatus LIQInfoParser::GetAttrParaInfo()
         OPS_LOG_I(context_->GetNodeName(), "layout_key is:%s", opParamInfo_.layOutKey);
     }
     if (opParamInfo_.sparseCount != nullptr) {
-        OPS_LOG_I(context_->GetNodeName(), "selscted count is:%d", *opParamInfo_.sparseCount);
+        OPS_LOG_I(context_->GetNodeName(), "selscted count is:%d", static_cast<int>(*opParamInfo_.sparseCount));
     }
     if (opParamInfo_.sparseMode != nullptr) {
-        OPS_LOG_I(context_->GetNodeName(), "sparse mode is:%d", *opParamInfo_.sparseMode);
+        OPS_LOG_I(context_->GetNodeName(), "sparse mode is:%d", static_cast<int>(*opParamInfo_.sparseMode));
     }
     if (opParamInfo_.queryQuantMode != nullptr) {
-        OPS_LOG_I(context_->GetNodeName(), "query_quant_mode mode is:%d", *opParamInfo_.queryQuantMode);
+        OPS_LOG_I(context_->GetNodeName(), "query_quant_mode mode is:%d", static_cast<int>(*opParamInfo_.queryQuantMode));
     }
     if (opParamInfo_.keyQuantMode != nullptr) {
-        OPS_LOG_I(context_->GetNodeName(), "key_quant_mode mode is:%d", *opParamInfo_.keyQuantMode);
+        OPS_LOG_I(context_->GetNodeName(), "key_quant_mode mode is:%d", static_cast<int>(*opParamInfo_.keyQuantMode));
     }
     OPS_LOG_I(context_->GetNodeName(), "GetAttrParaInfo end");
 
@@ -219,7 +244,7 @@ ge::graphStatus LIQInfoParser::CheckAttrParaInfo()
                OPS_LOG_E(opName_, "input attr sparse_count must > 0 and <= 2048."), return ge::GRAPH_FAILED);
     OPS_ERR_IF(!((*opParamInfo_.sparseMode == 0) || (*opParamInfo_.sparseMode == SPARSE_MODE_LOWER)),
                OPS_LOG_E(opName_, "input attr sparse_mode only supported 0 or 3, but now is %u.",
-                         *opParamInfo_.sparseMode), return ge::GRAPH_FAILED);
+                         static_cast<unsigned>(*opParamInfo_.sparseMode)), return ge::GRAPH_FAILED);
 
     OPS_ERR_IF(*opParamInfo_.queryQuantMode != 0, OPS_LOG_E(opName_, "input attr query_quant_mode only supported 0."),
                return ge::GRAPH_FAILED);
@@ -227,21 +252,40 @@ ge::graphStatus LIQInfoParser::CheckAttrParaInfo()
     OPS_ERR_IF(*opParamInfo_.keyQuantMode != 0, OPS_LOG_E(opName_, "input attr key_quant_mode only supported 0."),
                return ge::GRAPH_FAILED);
 
-    const bool prefetch = opParamInfo_.kvAddresses.tensor != nullptr || opParamInfo_.prefetchThreshold.tensor != nullptr;
+    const TilingOptionalParaInfo *residentInputs[] = {&opParamInfo_.reqIds, &opParamInfo_.tokenToReq,
+        &opParamInfo_.stablePrefixLens, &opParamInfo_.hostBlockTable, &opParamInfo_.hostCacheBases,
+        &opParamInfo_.residentK, &opParamInfo_.residentV, &opParamInfo_.lastReqIds,
+        &opParamInfo_.slotToToken, &opParamInfo_.lruSlots, &opParamInfo_.activeRows};
+    unsigned residentCount = 0;
+    for (const auto *input : residentInputs) residentCount += input->tensor != nullptr;
+    const auto mode = LIQHost::ClassifyMode(opParamInfo_.kvAddresses.tensor != nullptr,
+                                          opParamInfo_.prefetchThreshold.tensor != nullptr, residentCount);
+    OPS_ERR_IF(mode == LIQHost::Mode::Invalid,
+               OPS_LOG_E(opName_, "prefetch inputs must specify complete standalone or resident state."),
+               return ge::GRAPH_FAILED);
+    const bool standalone = mode == LIQHost::Mode::Standalone;
+    const bool resident = mode == LIQHost::Mode::Resident;
+    const bool prefetch = standalone || resident;
     OPS_ERR_IF(prefetch && socVersion_ != platform_ascendc::SocVersion::ASCEND950,
                OPS_LOG_E(opName_, "prefetch mode only supports ASCEND950."), return ge::GRAPH_FAILED);
-    OPS_ERR_IF(prefetch && (opParamInfo_.kvAddresses.tensor == nullptr || opParamInfo_.prefetchThreshold.tensor == nullptr),
-               OPS_LOG_E(opName_, "kv_addresses and prefetch_threshold must be provided together."), return ge::GRAPH_FAILED);
     OPS_ERR_IF(prefetch && (opParamInfo_.kvRowBytes == nullptr || opParamInfo_.prefetchBudget == nullptr ||
-                            opParamInfo_.emaDecay == nullptr),
+                            opParamInfo_.emaDecay == nullptr || opParamInfo_.hostBlockSize == nullptr ||
+                            opParamInfo_.hostNumBlocks == nullptr),
                OPS_LOG_E(opName_, "prefetch attributes are missing."), return ge::GRAPH_FAILED);
     OPS_ERR_IF(!prefetch && ((opParamInfo_.kvRowBytes != nullptr && *opParamInfo_.kvRowBytes != 0) ||
-                             (opParamInfo_.prefetchBudget != nullptr && *opParamInfo_.prefetchBudget != 0)),
-               OPS_LOG_E(opName_, "legacy mode requires kv_row_bytes and prefetch_budget to be zero."), return ge::GRAPH_FAILED);
-    OPS_ERR_IF(prefetch && (*opParamInfo_.kvRowBytes < 1 || *opParamInfo_.kvRowBytes > 4096),
+                             (opParamInfo_.prefetchBudget != nullptr && *opParamInfo_.prefetchBudget != 0) ||
+                             (opParamInfo_.hostBlockSize != nullptr && *opParamInfo_.hostBlockSize != 0) ||
+                             (opParamInfo_.hostNumBlocks != nullptr && *opParamInfo_.hostNumBlocks != 0)),
+               OPS_LOG_E(opName_, "legacy mode requires prefetch attributes to be zero."), return ge::GRAPH_FAILED);
+    OPS_ERR_IF((standalone && (*opParamInfo_.kvRowBytes < 1 || *opParamInfo_.kvRowBytes > 4096)) ||
+                   (resident && *opParamInfo_.kvRowBytes != 0),
                OPS_LOG_E(opName_, "kv_row_bytes must be in [1,4096]."), return ge::GRAPH_FAILED);
     OPS_ERR_IF(prefetch && (*opParamInfo_.prefetchBudget < 0 || *opParamInfo_.prefetchBudget > 2048),
                OPS_LOG_E(opName_, "prefetch_budget must be in [0,2048]."), return ge::GRAPH_FAILED);
+OPS_ERR_IF(standalone && (*opParamInfo_.hostBlockSize != 0 || *opParamInfo_.hostNumBlocks != 0),
+           OPS_LOG_E(opName_, "standalone mode requires zero host block attributes"), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(resident && (!LIQHost::FitsIndex(*opParamInfo_.hostBlockSize) || !LIQHost::FitsIndex(*opParamInfo_.hostNumBlocks)),
+               OPS_LOG_E(opName_, "resident host block attributes must be positive."), return ge::GRAPH_FAILED);
     OPS_ERR_IF(prefetch && (!std::isfinite(*opParamInfo_.emaDecay) || *opParamInfo_.emaDecay < 0.0F || *opParamInfo_.emaDecay >= 1.0F),
                OPS_LOG_E(opName_, "ema_decay must be finite and in [0,1)."), return ge::GRAPH_FAILED);
 
@@ -255,7 +299,7 @@ ge::graphStatus LIQInfoParser::GetOpParaInfo()
     if (ge::GRAPH_SUCCESS != GetAttrParaInfo()) {
         return ge::GRAPH_FAILED;
     }
-    if (ge::GRAPH_SUCCESS != CheckAttrParaInfo()) {
+    if (ge::GRAPH_SUCCESS != CheckRequiredAttrExistence() || ge::GRAPH_SUCCESS != CheckAttrParaInfo()) {
         return ge::GRAPH_FAILED;
     }
     return ge::GRAPH_SUCCESS;
@@ -337,7 +381,7 @@ ge::graphStatus LIQInfoParser::GetAndCheckOptionalInput()
             opParamInfo_.actualSeqLengthsK.tensor == nullptr,
             OPS_LOG_E(opName_, "key layout only supported PA_BSND, input actual_seq_lengths_key must not be null"),
             return ge::GRAPH_FAILED);
-        OPS_ERR_IF(opParamInfo_.blockTable.desc->GetDataType() != ge::DT_INT32,
+        OPS_ERR_IF(opParamInfo_.blockTable.desc == nullptr || opParamInfo_.blockTable.desc->GetDataType() != ge::DT_INT32,
                    OPS_LOG_E(opName_, "input block_table data type only support int32"), return ge::GRAPH_FAILED);
     } else {
         OPS_ERR_IF(opParamInfo_.blockTable.tensor != nullptr,
@@ -351,6 +395,10 @@ ge::graphStatus LIQInfoParser::GetAndCheckOptionalInput()
                    return ge::GRAPH_FAILED);
     }
     OPS_ERR_IF(opParamInfo_.actualSeqLengthsK.tensor != nullptr &&
+                   (opParamInfo_.actualSeqLengthsK.desc == nullptr ||
+                    opParamInfo_.actualSeqLengthsK.tensor->GetStorageShape().GetDimNum() != 1),
+               OPS_LOG_E(opName_, "sequence lengths require a descriptor and rank one"), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(opParamInfo_.actualSeqLengthsK.tensor != nullptr &&
                     opParamInfo_.actualSeqLengthsK.desc->GetDataType() != ge::DT_INT32,
                    OPS_LOG_E(opName_, "input actual_seq_lengths_key data type only support int32"),
                    return ge::GRAPH_FAILED);
@@ -360,20 +408,47 @@ ge::graphStatus LIQInfoParser::GetAndCheckOptionalInput()
                    return ge::GRAPH_FAILED);
     }
     OPS_ERR_IF(opParamInfo_.actualSeqLengthsQ.tensor != nullptr &&
+                   (opParamInfo_.actualSeqLengthsQ.desc == nullptr ||
+                    opParamInfo_.actualSeqLengthsQ.tensor->GetStorageShape().GetDimNum() != 1),
+               OPS_LOG_E(opName_, "sequence lengths require a descriptor and rank one"), return ge::GRAPH_FAILED);
+    OPS_ERR_IF(opParamInfo_.actualSeqLengthsQ.tensor != nullptr &&
                    opParamInfo_.actualSeqLengthsQ.desc->GetDataType() != ge::DT_INT32,
                OPS_LOG_E(opName_, "input actual_seq_lengths_query data type only support int32"),
                return ge::GRAPH_FAILED);
 
-    const bool prefetch = opParamInfo_.kvAddresses.tensor != nullptr || opParamInfo_.prefetchThreshold.tensor != nullptr;
-    if (prefetch) {
-        OPS_ERR_IF(opParamInfo_.kvAddresses.desc == nullptr || opParamInfo_.prefetchThreshold.desc == nullptr,
-                   OPS_LOG_E(opName_, "prefetch input descriptors must be present."), return ge::GRAPH_FAILED);
-        OPS_ERR_IF(opParamInfo_.kvAddresses.desc->GetDataType() != ge::DT_INT64 ||
-                       opParamInfo_.prefetchThreshold.desc->GetDataType() != ge::DT_FLOAT,
-                   OPS_LOG_E(opName_, "prefetch input data types are invalid."), return ge::GRAPH_FAILED);
-        OPS_ERR_IF(opParamInfo_.kvAddresses.tensor->GetStorageShape().GetDimNum() != DIM_NUM_TWO ||
+    if (opParamInfo_.prefetchThreshold.tensor != nullptr) {
+        OPS_ERR_IF(opParamInfo_.prefetchThreshold.desc == nullptr ||
+                       opParamInfo_.prefetchThreshold.desc->GetDataType() != ge::DT_FLOAT ||
                        opParamInfo_.prefetchThreshold.tensor->GetStorageShape().GetDimNum() != 1,
-                   OPS_LOG_E(opName_, "prefetch input ranks are invalid."), return ge::GRAPH_FAILED);
+                   OPS_LOG_E(opName_, "prefetch_threshold requires FLOAT32 rank one"), return ge::GRAPH_FAILED);
+    }
+    if (opParamInfo_.kvAddresses.tensor != nullptr) {
+        OPS_ERR_IF(opParamInfo_.kvAddresses.desc == nullptr ||
+                       opParamInfo_.kvAddresses.desc->GetDataType() != ge::DT_INT64 ||
+                       opParamInfo_.kvAddresses.tensor->GetStorageShape().GetDimNum() != 2,
+                   OPS_LOG_E(opName_, "kv_addresses requires INT64 rank two"), return ge::GRAPH_FAILED);
+    }
+
+    if (opParamInfo_.reqIds.tensor != nullptr) {
+        const auto check = [&](const TilingOptionalParaInfo &p, ge::DataType type, uint32_t rank, const char *name) {
+            OPS_ERR_IF(p.desc == nullptr || p.desc->GetDataType() != type || p.tensor == nullptr ||
+                           p.tensor->GetStorageShape().GetDimNum() != rank,
+                       OPS_LOG_E(opName_, "%s has invalid dtype or rank.", name), return ge::GRAPH_FAILED);
+            return ge::GRAPH_SUCCESS;
+        };
+        if (check(opParamInfo_.reqIds, ge::DT_INT64, 1, "req_ids") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.tokenToReq, ge::DT_INT32, 1, "token_to_req") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.stablePrefixLens, ge::DT_INT32, 1, "stable_prefix_lens") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.hostBlockTable, ge::DT_INT32, 2, "host_block_table") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.hostCacheBases, ge::DT_INT64, 1, "host_cache_bases") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.residentK, ge::DT_UINT8, 3, "resident_k") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.residentV, ge::DT_UINT8, 3, "resident_v") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.lastReqIds, ge::DT_INT64, 1, "last_req_ids") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.slotToToken, ge::DT_INT32, 2, "slot_to_token") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.lruSlots, ge::DT_INT32, 2, "lru_slots") != ge::GRAPH_SUCCESS ||
+            check(opParamInfo_.activeRows, ge::DT_INT32, 1, "active_rows") != ge::GRAPH_SUCCESS) {
+            return ge::GRAPH_FAILED;
+        }
     }
 
     return ge::GRAPH_SUCCESS;
@@ -410,6 +485,31 @@ ge::graphStatus LIQInfoParser::CheckShapeDim()
                          weightsShapeDim),
                return ge::GRAPH_FAILED);
 
+    const auto &keyShape = opParamInfo_.key.shape->GetStorageShape();
+    OPS_ERR_IF(keyShape.GetDimNum() != (kLayout_ == DataLayout::TND ? 3U : 4U),
+               OPS_LOG_E(opName_, "key rank does not match layout"), return ge::GRAPH_FAILED);
+    const TilingRequiredParaInfo *required[] = {&opParamInfo_.query, &opParamInfo_.key, &opParamInfo_.weights,
+        &opParamInfo_.query_dequant_scale, &opParamInfo_.key_dequant_scale};
+    for (const auto *input : required) {
+        const auto &shape = input->shape->GetStorageShape();
+        for (size_t dim = 0; dim < shape.GetDimNum(); ++dim) {
+            OPS_ERR_IF(!LIQHost::FitsIndex(shape.GetDim(dim)),
+                       OPS_LOG_E(opName_, "input dimensions must be positive and fit INT32"), return ge::GRAPH_FAILED);
+        }
+    }
+    const TilingOptionalParaInfo *optional[] = {&opParamInfo_.actualSeqLengthsQ, &opParamInfo_.actualSeqLengthsK,
+        &opParamInfo_.blockTable, &opParamInfo_.kvAddresses, &opParamInfo_.prefetchThreshold,
+        &opParamInfo_.reqIds, &opParamInfo_.tokenToReq, &opParamInfo_.stablePrefixLens,
+        &opParamInfo_.hostBlockTable, &opParamInfo_.hostCacheBases, &opParamInfo_.residentK, &opParamInfo_.residentV,
+        &opParamInfo_.lastReqIds, &opParamInfo_.slotToToken, &opParamInfo_.lruSlots, &opParamInfo_.activeRows};
+    for (const auto *input : optional) {
+        if (input->tensor == nullptr) continue;
+        const auto &shape = input->tensor->GetStorageShape();
+        for (size_t dim = 0; dim < shape.GetDimNum(); ++dim) {
+            OPS_ERR_IF(!LIQHost::FitsIndex(shape.GetDim(dim)),
+                       OPS_LOG_E(opName_, "metadata dimensions must be positive and fit INT32"), return ge::GRAPH_FAILED);
+        }
+    }
     return ge::GRAPH_SUCCESS;
 }
 
@@ -428,6 +528,8 @@ ge::graphStatus LIQInfoParser::GetN1Size()
 ge::graphStatus LIQInfoParser::GetActualSeqLenSize(uint32_t &size, const gert::Tensor *tensor,
                                                    const std::string &actualSeqLenName)
 {
+    OPS_ERR_IF(!LIQHost::FitsIndex(tensor->GetShapeSize()),
+               OPS_LOG_E(opName_, "request count must fit INT32"), return ge::GRAPH_FAILED);
     size = static_cast<uint32_t>(tensor->GetShapeSize());
     if (size <= 0) {
         OPS_LOG_E(opName_, "%s's shape size is %u, it should be greater than 0.", actualSeqLenName.c_str(), size);
@@ -536,7 +638,9 @@ ge::graphStatus LIQInfoParser::GetS2SizeForPageAttention()
     OPS_ERR_IF((blockCount_ == 0), OPS_LOG_E(opName_, "input key's block_count cannot be 0."), return ge::GRAPH_FAILED);
 
     maxBlockNumPerBatch_ = opParamInfo_.blockTable.tensor->GetStorageShape().GetDim(1);
-    s2Size_ = maxBlockNumPerBatch_ * blockSize_;
+    OPS_ERR_IF(maxBlockNumPerBatch_ > INT32_MAX / blockSize_,
+               OPS_LOG_E(opName_, "key logical capacity must fit INT32"), return ge::GRAPH_FAILED);
+    s2Size_ = static_cast<int64_t>(maxBlockNumPerBatch_) * blockSize_;
     OPS_LOG_I(context_->GetNodeName(), "maxBlockNumPerBatch_ is %d, blockSize_ is %d, s2Size_ is %d",
               maxBlockNumPerBatch_, blockSize_, s2Size_);
     return ge::GRAPH_SUCCESS;
@@ -591,13 +695,49 @@ ge::graphStatus LIQInfoParser::ValidateInputShapesMatch()
     uint32_t queryWeightsN1Dim = 1;
     uint32_t outN2Dim = 1;
 
-    const bool prefetch = opParamInfo_.kvAddresses.tensor != nullptr;
-    if (prefetch) {
-        OPS_ERR_IF(opParamInfo_.prefetchThreshold.tensor->GetShapeSize() != bSize_ ||
+    const bool resident = opParamInfo_.residentK.tensor != nullptr;
+    if (opParamInfo_.kvAddresses.tensor != nullptr) {
+        OPS_ERR_IF(opParamInfo_.prefetchThreshold.tensor->GetShapeSize() != opParamInfo_.query.shape->GetStorageShape().GetDim(0) ||
                        opParamInfo_.kvAddresses.tensor->GetStorageShape().GetDim(0) != bSize_ ||
                        opParamInfo_.kvAddresses.tensor->GetStorageShape().GetDim(1) !=
                            opParamInfo_.blockTable.tensor->GetStorageShape().GetDim(1) * blockSize_,
                    OPS_LOG_E(opName_, "prefetch inputs do not match batch or block table capacity."),
+                   return ge::GRAPH_FAILED);
+    }
+
+    if (resident) {
+        const auto qRows = opParamInfo_.query.shape->GetStorageShape().GetDim(0);
+        const auto hostBlocks = opParamInfo_.hostBlockTable.tensor->GetStorageShape();
+        const auto capacity = opParamInfo_.residentK.tensor->GetStorageShape().GetDim(1);
+        const auto rows = opParamInfo_.residentK.tensor->GetStorageShape().GetDim(0);
+        OPS_ERR_IF(opParamInfo_.prefetchThreshold.tensor->GetShapeSize() != qRows ||
+                       opParamInfo_.reqIds.tensor->GetShapeSize() != bSize_ ||
+                       opParamInfo_.tokenToReq.tensor->GetShapeSize() != qRows ||
+                       opParamInfo_.stablePrefixLens.tensor->GetShapeSize() != qRows ||
+                       opParamInfo_.hostBlockTable.tensor->GetStorageShape().GetDim(0) != bSize_ ||
+                       opParamInfo_.hostCacheBases.tensor->GetShapeSize() != 2 ||
+                       opParamInfo_.residentV.tensor->GetStorageShape().GetDim(0) != rows ||
+                       opParamInfo_.residentV.tensor->GetStorageShape().GetDim(1) != capacity ||
+                       opParamInfo_.lastReqIds.tensor->GetShapeSize() != rows ||
+                       opParamInfo_.slotToToken.tensor->GetStorageShape().GetDim(0) != rows ||
+                       opParamInfo_.slotToToken.tensor->GetStorageShape().GetDim(1) != capacity ||
+                       opParamInfo_.lruSlots.tensor->GetStorageShape().GetDim(0) != rows ||
+                       opParamInfo_.lruSlots.tensor->GetStorageShape().GetDim(1) != capacity ||
+                       opParamInfo_.activeRows.tensor->GetShapeSize() != 1 || rows < qRows || capacity == 0 ||
+                       hostBlocks.GetDim(1) == 0,
+                   OPS_LOG_E(opName_, "resident state shapes are invalid."), return ge::GRAPH_FAILED);
+        const auto kShape = opParamInfo_.residentK.tensor->GetStorageShape();
+        const auto vShape = opParamInfo_.residentV.tensor->GetStorageShape();
+        OPS_ERR_IF(kShape.GetDim(2) < 1 || vShape.GetDim(2) < 1 || kShape.GetDim(2) > 4096 || vShape.GetDim(2) > 4096,
+                   OPS_LOG_E(opName_, "resident K/V row bytes must be in [1,4096]."), return ge::GRAPH_FAILED);
+        OPS_ERR_IF(!LIQHost::TensorSpan(*opParamInfo_.hostNumBlocks, *opParamInfo_.hostBlockSize, kShape.GetDim(2)) ||
+                       !LIQHost::TensorSpan(*opParamInfo_.hostNumBlocks, *opParamInfo_.hostBlockSize, vShape.GetDim(2)) ||
+                       !LIQHost::TensorSpan(rows, capacity, kShape.GetDim(2)) ||
+                       !LIQHost::TensorSpan(rows, capacity, vShape.GetDim(2)),
+                   OPS_LOG_E(opName_, "resident byte spans exceed INT64 address indexing"), return ge::GRAPH_FAILED);
+        OPS_ERR_IF(*opParamInfo_.prefetchBudget > static_cast<int32_t>(std::min<uint32_t>(SPARSE_LIMIT, capacity)) ||
+                       *opParamInfo_.sparseCount > static_cast<int32_t>(std::min<uint32_t>(SPARSE_LIMIT, capacity)),
+                   OPS_LOG_E(opName_, "resident budget and sparse_count must not exceed resident capacity."),
                    return ge::GRAPH_FAILED);
     }
 
@@ -759,6 +899,18 @@ void LIQInfoParser::GenerateInfo(LIQTilingInfo &liqInfo)
     liqInfo.keyBlockCount = (kLayout_ == DataLayout::PA_BSND)
                                 ? static_cast<uint32_t>(opParamInfo_.key.shape->GetStorageShape().GetDim(0))
                                 : 0;
+    liqInfo.queryRows = static_cast<uint32_t>(opParamInfo_.query.shape->GetStorageShape().GetDim(0));
+    liqInfo.residentMode = opParamInfo_.residentK.tensor != nullptr;
+    if (liqInfo.residentMode) {
+        const auto kShape = opParamInfo_.residentK.tensor->GetStorageShape();
+        const auto vShape = opParamInfo_.residentV.tensor->GetStorageShape();
+        liqInfo.residentCapacity = static_cast<uint32_t>(kShape.GetDim(1));
+        liqInfo.residentKBytes = static_cast<uint32_t>(kShape.GetDim(2));
+        liqInfo.residentVBytes = static_cast<uint32_t>(vShape.GetDim(2));
+        liqInfo.hostBlockSize = static_cast<uint32_t>(*opParamInfo_.hostBlockSize);
+        liqInfo.hostBlockCount = static_cast<uint32_t>(*opParamInfo_.hostNumBlocks);
+        liqInfo.hostMaxBlockNum = static_cast<uint32_t>(opParamInfo_.hostBlockTable.tensor->GetStorageShape().GetDim(1));
+    }
 
     liqInfo.pageAttentionFlag = (kLayout_ == DataLayout::PA_BSND);
     liqInfo.sparseMode = *opParamInfo_.sparseMode;
@@ -802,17 +954,18 @@ ge::graphStatus LIQInfoParser::ParseAndCheck(LIQTilingInfo &liqInfo)
                OPS_LOG_E(opName_, "batch, block table capacity and physical block count must be nonzero."),
                return ge::GRAPH_FAILED);
 
-    if (socVersion_ == platform_ascendc::SocVersion::ASCEND950 && opParamInfo_.kvAddresses.tensor == nullptr) {
+    if (socVersion_ == platform_ascendc::SocVersion::ASCEND950 && opParamInfo_.kvAddresses.tensor == nullptr &&
+        opParamInfo_.residentK.tensor == nullptr) {
         OPS_LOG_E(opName_, "ASCEND950 requires prefetch inputs.");
         return ge::GRAPH_FAILED;
     }
-    if (opParamInfo_.kvAddresses.tensor != nullptr) {
+    const bool resident = opParamInfo_.residentK.tensor != nullptr;
+    if (opParamInfo_.kvAddresses.tensor != nullptr || resident) {
         OPS_ERR_IF(gSize_ != 32 && gSize_ != 64,
                    OPS_LOG_E(opName_, "prefetch mode requires 32 or 64 query heads."),
                    return ge::GRAPH_FAILED);
-        OPS_ERR_IF(qLayout_ != DataLayout::TND || kLayout_ != DataLayout::PA_BSND ||
-                       bSize_ != opParamInfo_.query.shape->GetStorageShape().GetDim(0),
-                   OPS_LOG_E(opName_, "prefetch mode requires TND/PA_BSND and one query per request."),
+        OPS_ERR_IF(qLayout_ != DataLayout::TND || kLayout_ != DataLayout::PA_BSND,
+                   OPS_LOG_E(opName_, "prefetch mode requires TND/PA_BSND."),
                    return ge::GRAPH_FAILED);
     }
 
@@ -836,7 +989,7 @@ ge::graphStatus LightningIndexerQuantTiling::DoTiling(LIQTilingInfo *tilingInfo)
     uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
     uint32_t blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, aicNum, aivNum);
     if (tilingInfo->isArch35) {
-        blockDim = std::min(tilingInfo->bSize, aicNum);
+        blockDim = std::min(tilingInfo->queryRows, aicNum);
     }
     context_->SetBlockDim(blockDim);
 
@@ -854,10 +1007,13 @@ ge::graphStatus LightningIndexerQuantTiling::DoTiling(LIQTilingInfo *tilingInfo)
     constexpr uint32_t TOPK_MAX_SIZE = 2048;           // TopK选取个数
     size_t workspaceSize = ascendcPlatform.GetLibApiWorkSpaceSize();
     if (tilingInfo->isArch35) {
-        const size_t stageStride = (static_cast<size_t>(tilingInfo->kvRowBytes) + 31U) & ~31U;
-        const size_t perRequest = std::max<size_t>(1U, tilingInfo->prefetchBudget) * stageStride;
-        const size_t staging = static_cast<size_t>(tilingInfo->bSize) * ((perRequest + 511U) & ~511U);
-        workspaceSize += staging + 512U;
+        const auto mode = tilingInfo->residentMode ? LIQHost::Mode::Resident : LIQHost::Mode::Standalone;
+        OPS_ERR_IF(!LIQHost::WorkspaceBytes(mode, tilingInfo->queryRows, tilingInfo->residentCapacity,
+                                           tilingInfo->kvRowBytes, tilingInfo->prefetchBudget, workspaceSize, workspaceSize),
+                   OPS_LOG_E(tilingInfo->opName, "prefetch workspace arithmetic overflow"), return ge::GRAPH_FAILED);
+        OPS_ERR_IF(LIQHost::UbBytes(tilingInfo->sparseCount, tilingInfo->prefetchBudget,
+                                   tilingInfo->kvRowBytes, tilingInfo->residentMode) > 192U * 1024U,
+                   OPS_LOG_E(tilingInfo->opName, "prefetch UB requirement exceeds 192 KiB"), return ge::GRAPH_FAILED);
     } else {
         const uint32_t mm1ResSize = M_BASE_SIZE * S2_BASE_SIZE;
         workspaceSize += mm1ResSize * MM1_RES_ELEM_SIZE * DOUBLE_BUFFER * aicNum;
@@ -881,6 +1037,14 @@ ge::graphStatus LightningIndexerQuantTiling::DoTiling(LIQTilingInfo *tilingInfo)
     tilingData_.set_emaDecay(tilingInfo->emaDecay);
     tilingData_.set_isArch35(tilingInfo->isArch35 ? 1U : 0U);
     tilingData_.set_keyBlockCount(tilingInfo->keyBlockCount);
+    tilingData_.set_queryRows(tilingInfo->queryRows);
+    tilingData_.set_residentMode(tilingInfo->residentMode ? 1U : 0U);
+    tilingData_.set_residentCapacity(tilingInfo->residentCapacity);
+    tilingData_.set_residentKBytes(tilingInfo->residentKBytes);
+    tilingData_.set_residentVBytes(tilingInfo->residentVBytes);
+    tilingData_.set_hostBlockSize(tilingInfo->hostBlockSize);
+    tilingData_.set_hostBlockCount(tilingInfo->hostBlockCount);
+    tilingData_.set_hostMaxBlockNum(tilingInfo->hostMaxBlockNum);
     tilingData_.set_usedCoreNum(blockDim);
     tilingData_.SaveToBuffer(context_->GetRawTilingData()->GetData(), context_->GetRawTilingData()->GetCapacity());
     context_->GetRawTilingData()->SetDataSize(tilingData_.GetDataSize());

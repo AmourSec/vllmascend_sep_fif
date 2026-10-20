@@ -1,8 +1,9 @@
-# Lightning Indexer Quant Decode Prefetch Tests
+# Lightning Indexer Quant Decode and MTP Prefetch Tests
 
-These tests exercise the standalone decode prefetch operator contract. They do
-not start a model, run a scheduler, or depend on model integration. The NumPy
-oracle is independent of Torch and the custom extension.
+These tests exercise standalone prefetch and resident-cache prefetch, including
+multiple causal queries per request. They do not start a model or scheduler.
+The NumPy oracle is independent of Torch and the custom extension. The complete
+resident API and state contract are in [PREFETCH.md](../../PREFETCH.md).
 
 The pinned release lane uses the vLLM release tag `v0.28.0` and the verified
 vLLM commit `84030bbe3d74d99bad477a3d2e37a973ccd8865c` as separate provenance
@@ -319,6 +320,38 @@ budgets, zero-length requests, graph replay with changed thresholds and
 lengths, and same-core request reuse with unaligned rows. Standalone variants
 03 and 05 were tested by the user; their combined correctness, UB allocation
 and performance still require an Ascend 950 run.
+
+## MTP and resident-cache regressions
+
+Rebuild OPP and the Torch extension together before running these tests: the
+generated ACLNN signature now includes the optional resident state and host
+layout attributes. The standalone Torch signature is unchanged.
+
+From this directory, run the new device suites in a fresh process:
+
+```bash
+python3 -m pytest -q --source=hbm \
+  test_qli_mtp_resident.py test_qli_resident_npu_*.py
+python3 -m pytest -q --source=host \
+  test_qli_mtp_resident.py test_qli_resident_npu_*.py
+```
+
+The new numeric, policy and graph matrix uses HBM source pools. Selecting
+`--source=host` additionally enables the dedicated resident MemFabric DVA smoke;
+it does not convert that entire new matrix to DDR sources.
+
+The MTP cases use mixed query counts per request and check each query against
+its own causal visible length. They cover INT8/FP8 with 32/64 heads, separate
+host/indexer block geometry, native K/V byte views, warm-cache hits, miss
+payloads, LRU state, request identity changes, mutable tails, invalid metadata,
+inactive rows, real graph replay, and the unmodified post-TopK Plan/Transfer.
+Resident stats contain `[admitted_candidates, transferred_misses]`. This differs
+from standalone stats, whose second entry counts final-gather fallbacks.
+
+The native row-mapping and resident-policy tests compile the production portable
+helpers with the host C++ compiler. They can run on a Mac; they do not emulate
+NPU DMA or establish device correctness. The full command above also collects
+the existing standalone regressions when the file filters are omitted.
 
 ## Mac limitations
 

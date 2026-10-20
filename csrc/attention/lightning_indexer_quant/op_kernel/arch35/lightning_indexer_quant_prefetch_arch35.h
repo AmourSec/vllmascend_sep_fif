@@ -54,9 +54,10 @@ public:
         indices_.SetGlobalBuffer((__gm__ int32_t *)indices);
     }
 
-    __aicore__ inline void Reset(uint32_t batch)
+    __aicore__ inline void Reset(uint32_t batch, uint32_t request)
     {
         batch_ = batch;
+        request_ = request;
         count_ = 0;
         fallback_ = 0;
         thresholdValue_ = rowBytes_ > 0 ? threshold_.GetValue(batch) : 0.0F;
@@ -77,7 +78,7 @@ public:
         }
         GlobalTensor<uint8_t> source;
         source.SetGlobalBuffer((__gm__ uint8_t *)(uint64_t)addresses_.GetValue(
-            static_cast<uint64_t>(batch_) * addressStride_ + token));
+            static_cast<uint64_t>(request_) * addressStride_ + token));
         const uint32_t slot = count_;
         const uint32_t bank = slot & 1U;
         const uint32_t eventId = bank == 0 ? EVENT_ID1 : EVENT_ID2;
@@ -121,7 +122,7 @@ public:
                 source = staging_[static_cast<uint64_t>(batch_) * batchStride_ + slot * rowStride_];
             } else {
                 source.SetGlobalBuffer((__gm__ uint8_t *)(uint64_t)addresses_.GetValue(
-                    static_cast<uint64_t>(batch_) * addressStride_ + token));
+                    static_cast<uint64_t>(request_) * addressStride_ + token));
                 ++fallback_;
             }
             uint32_t bank = i & 1U;
@@ -221,7 +222,7 @@ private:
         return left < count_ && candidate_.GetValue(left) == token ? static_cast<int32_t>(left) : -1;
     }
 
-    uint32_t rowBytes_, budget_, topK_, addressStride_, batch_, count_, fallback_;
+    uint32_t rowBytes_, budget_, topK_, addressStride_, batch_, request_, count_, fallback_;
     uint64_t rowStride_, batchStride_;
     float thresholdValue_;
     TBuf<TPosition::VECCALC> copyBuf_, candidateBuf_, indexBuf_, stateBuf_;

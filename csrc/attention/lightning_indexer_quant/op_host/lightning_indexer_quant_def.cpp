@@ -71,6 +71,17 @@ public:
             .DataTypeList({ge::DT_FLOAT})
             .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
+        this->Input("req_ids").ParamType(OPTIONAL).DataTypeList({ge::DT_INT64}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("token_to_req").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("stable_prefix_lens").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("host_block_table").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("host_cache_bases").ParamType(OPTIONAL).DataTypeList({ge::DT_INT64}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("resident_k").ParamType(OPTIONAL).DataTypeList({ge::DT_UINT8}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("resident_v").ParamType(OPTIONAL).DataTypeList({ge::DT_UINT8}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("last_req_ids").ParamType(OPTIONAL).DataTypeList({ge::DT_INT64}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("slot_to_token").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("lru_slots").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        this->Input("active_rows").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
         this->Output("sparse_indices").ParamType(REQUIRED).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND});
         this->Output("gathered_kv").ParamType(REQUIRED).DataTypeList({ge::DT_UINT8}).FormatList({ge::FORMAT_ND});
         this->Output("prefetch_indices").ParamType(REQUIRED).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND});
@@ -85,6 +96,8 @@ public:
         this->Attr("kv_row_bytes").AttrType(OPTIONAL).Int(0);
         this->Attr("prefetch_budget").AttrType(OPTIONAL).Int(0);
         this->Attr("ema_decay").AttrType(OPTIONAL).Float(0.5);
+        this->Attr("host_block_size").AttrType(OPTIONAL).Int(0);
+        this->Attr("host_num_blocks").AttrType(OPTIONAL).Int(0);
         OpAICoreConfig aicore_config;
         aicore_config.Input("query")
             .ParamType(REQUIRED)
@@ -173,6 +186,17 @@ public:
             .DataTypeList({ge::DT_FLOAT})
             .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
+        aicore_config_95.Input("req_ids").ParamType(OPTIONAL).DataTypeList({ge::DT_INT64}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("token_to_req").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("stable_prefix_lens").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("host_block_table").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("host_cache_bases").ParamType(OPTIONAL).DataTypeList({ge::DT_INT64}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("resident_k").ParamType(OPTIONAL).DataTypeList({ge::DT_UINT8}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("resident_v").ParamType(OPTIONAL).DataTypeList({ge::DT_UINT8}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("last_req_ids").ParamType(OPTIONAL).DataTypeList({ge::DT_INT64}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("slot_to_token").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("lru_slots").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
+        aicore_config_95.Input("active_rows").ParamType(OPTIONAL).DataTypeList({ge::DT_INT32}).FormatList({ge::FORMAT_ND}).AutoContiguous();
         aicore_config_95.Output("sparse_indices")
             .ParamType(REQUIRED)
             .DataTypeList({ge::DT_INT32})

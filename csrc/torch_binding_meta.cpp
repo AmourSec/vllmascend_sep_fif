@@ -1622,6 +1622,33 @@ npu_lightning_indexer_quant_prefetch_meta(
     return {sparse_indices, gathered_kv, prefetch_indices, prefetch_stats, next_threshold};
 }
 
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+npu_lightning_indexer_quant_prefetch_resident_meta(
+    const at::Tensor &query, const at::Tensor &key, const at::Tensor &weights,
+    const at::Tensor &query_dequant_scale, const at::Tensor &key_dequant_scale,
+    const at::Tensor &actual_seq_lengths_query, const at::Tensor &actual_seq_lengths_key,
+    const at::Tensor &block_table, const at::Tensor &prefetch_threshold,
+    const at::Tensor &req_ids, const at::Tensor &token_to_req, const at::Tensor &stable_prefix_lens,
+    const at::Tensor &host_block_table, const at::Tensor &host_cache_bases,
+    const at::Tensor &resident_k, const at::Tensor &resident_v, const at::Tensor &last_req_ids,
+    const at::Tensor &slot_to_token, const at::Tensor &lru_slots, const at::Tensor &active_rows,
+    int64_t host_block_size, int64_t host_num_blocks, int64_t prefetch_budget,
+    int64_t sparse_count, double ema_decay)
+{
+    (void)key; (void)weights; (void)query_dequant_scale; (void)key_dequant_scale;
+    (void)actual_seq_lengths_query; (void)actual_seq_lengths_key; (void)block_table;
+    (void)prefetch_threshold; (void)req_ids; (void)token_to_req; (void)stable_prefix_lens;
+    (void)host_block_table; (void)host_cache_bases; (void)resident_k; (void)resident_v;
+    (void)last_req_ids; (void)slot_to_token; (void)lru_slots; (void)active_rows;
+    (void)host_block_size; (void)host_num_blocks; (void)ema_decay;
+    const c10::SymInt rows = query.sym_size(0);
+    at::Tensor sparse_indices = at::empty_symint({rows, c10::SymInt(1), c10::SymInt(sparse_count)}, query.options().dtype(at::kInt));
+    at::Tensor prefetch_indices = at::empty_symint({rows, c10::SymInt(std::max<int64_t>(1, prefetch_budget))}, query.options().dtype(at::kInt));
+    at::Tensor prefetch_stats = at::empty_symint({rows, c10::SymInt(2)}, query.options().dtype(at::kInt));
+    at::Tensor next_threshold = at::empty_symint({rows}, query.options().dtype(at::kFloat));
+    return {sparse_indices, prefetch_indices, prefetch_stats, next_threshold};
+}
+
 std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_k2q_csr_meta(
     const at::Tensor &q2k,
     const at::Tensor &cu_seqlens,
@@ -2292,6 +2319,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_lightning_indexer_quant", &vllm_ascend::meta::npu_lightning_indexer_quant_meta);
     ops.impl("npu_lightning_indexer_quant_prefetch",
              &vllm_ascend::meta::npu_lightning_indexer_quant_prefetch_meta);
+    ops.impl("npu_lightning_indexer_quant_prefetch_resident",
+             &vllm_ascend::meta::npu_lightning_indexer_quant_prefetch_resident_meta);
     // MLA prolog (MlaPrologV3), Ascend950-only; name aligned with torch_npu
     ops.impl("npu_mla_prolog_v3", &vllm_ascend::meta::npu_mla_prolog_v3_meta);
     // chunk_gated_delta_rule_fwd_h

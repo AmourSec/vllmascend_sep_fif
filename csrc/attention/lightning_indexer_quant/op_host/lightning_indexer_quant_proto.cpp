@@ -72,6 +72,15 @@ static ge::graphStatus InferShapeLightningIndexerQuant(gert::InferShapeContext *
         return GRAPH_FAILED;
     }
 
+const size_t queryRank = inputLayoutQueryPtrStr == "TND" ? 3 : 4;
+const size_t keyRank = inputLayoutKeyPtrStr == "TND" ? 3 : 4;
+if (queryShape->GetDimNum() != queryRank || keyShape->GetDimNum() != keyRank ||
+    *sparse_count < 1 || *sparse_count > 2048 || *kv_row_bytes < 0 || *kv_row_bytes > 4096 ||
+    *prefetch_budget < 0 || *prefetch_budget > 2048) {
+    OPS_LOG_E(context, "invalid LightningIndexerQuant ranks or output attributes");
+    return GRAPH_FAILED;
+}
+
     outShape->SetDimNum(queryShape->GetDimNum());
     int64_t keyHeadNum = (inputLayoutKeyPtrStr == "TND") ? keyShape->GetDim(1) : keyShape->GetDim(2);
     if (inputLayoutQueryPtrStr == "BSND") {

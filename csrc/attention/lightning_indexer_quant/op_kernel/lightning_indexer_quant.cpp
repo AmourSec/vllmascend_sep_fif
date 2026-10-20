@@ -41,7 +41,13 @@ __global__ __aicore__ void lightning_indexer_quant(__gm__ uint8_t *query, __gm__
                                                    __gm__ uint8_t *queryScale, __gm__ uint8_t *keyScale,
                                                    __gm__ uint8_t *actualSeqLengthsQ, __gm__ uint8_t *actualSeqLengthsK,
                                                    __gm__ uint8_t *blocktable, __gm__ uint8_t *kvAddresses,
-                                                   __gm__ uint8_t *prefetchThreshold, __gm__ uint8_t *sparseIndices,
+                                                   __gm__ uint8_t *prefetchThreshold,
+                                                   __gm__ uint8_t *reqIds, __gm__ uint8_t *tokenToReq,
+                                                   __gm__ uint8_t *stablePrefix, __gm__ uint8_t *hostBlocks,
+                                                   __gm__ uint8_t *hostBases, __gm__ uint8_t *residentK,
+                                                   __gm__ uint8_t *residentV, __gm__ uint8_t *lastReqIds,
+                                                   __gm__ uint8_t *slotToToken, __gm__ uint8_t *lruSlots,
+                                                   __gm__ uint8_t *activeRows, __gm__ uint8_t *sparseIndices,
                                                    __gm__ uint8_t *gatheredKv, __gm__ uint8_t *prefetchIndices,
                                                    __gm__ uint8_t *prefetchStats, __gm__ uint8_t *nextThreshold,
                                                    __gm__ uint8_t *workspace, __gm__ uint8_t *tiling)
@@ -55,7 +61,9 @@ __global__ __aicore__ void lightning_indexer_quant(__gm__ uint8_t *query, __gm__
     using ScaleT = std::conditional_t<DT_Q == LI_TPL_FLOAT8_E4M3FN, float, half>;
     LIQ950::DecodePrefetch<QueryT, QkT, ScaleT> op;
     op.Init(query, key, weights, queryScale, keyScale, actualSeqLengthsQ, actualSeqLengthsK,
-        blocktable, kvAddresses, prefetchThreshold, sparseIndices, gatheredKv, prefetchIndices,
+        blocktable, kvAddresses, prefetchThreshold, reqIds, tokenToReq, stablePrefix, hostBlocks,
+        hostBases, residentK, residentV, lastReqIds, slotToToken, lruSlots, activeRows,
+        sparseIndices, gatheredKv, prefetchIndices,
         prefetchStats, nextThreshold, GetUserWorkspace(workspace), &tilingData, &tPipe);
     op.Process();
 #elif (defined __DAV_310R6__) || (__CCE_AICORE__ == 200)

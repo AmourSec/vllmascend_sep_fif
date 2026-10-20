@@ -16,8 +16,8 @@ __aicore__ inline uint64_t AlignBytes(uint64_t value, uint64_t alignment)
     return (value + alignment - 1) / alignment * alignment;
 }
 
-// A call owns its staging rows. There are no persistent slots to evict or reuse
-// before DMA completion, including when the same graph workspace is replayed.
+// A call owns its staging rows. Candidate DMA is speculative: candidate_ records
+// admitted slots immediately, while Drain() makes every row ready before Find().
 class PrefetchRows {
 public:
     __aicore__ inline void Init(TPipe *pipe, uint32_t rowBytes, uint32_t budget, uint32_t topK,
@@ -39,6 +39,8 @@ public:
         copy_ = copyBuf_.Get<uint8_t>();
         gather_[0] = copy_;
         gather_[1] = gatherBuf_.Get<uint8_t>();
+        banks_[0] = gather_[0];
+        banks_[1] = gather_[1];
         candidate_ = candidateBuf_.Get<int32_t>();
         index_ = indexBuf_.Get<int32_t>();
         state_ = stateBuf_.Get<int32_t>();
@@ -64,6 +66,8 @@ public:
         for (uint32_t i = 0; i < topK_; ++i) {
             index_.SetValue(i, -1);
         }
+        bankPending_[0] = false;
+        bankPending_[1] = false;
     }
 
     __aicore__ inline void Consider(uint32_t token, float score)
@@ -74,14 +78,31 @@ public:
         GlobalTensor<uint8_t> source;
         source.SetGlobalBuffer((__gm__ uint8_t *)(uint64_t)addresses_.GetValue(
             static_cast<uint64_t>(batch_) * addressStride_ + token));
-        CopyRow(staging_[static_cast<uint64_t>(batch_) * batchStride_ + count_ * rowStride_], source);
-        // Publish only after both DMA legs have completed.
-        candidate_.SetValue(count_++, token);
+        const uint32_t slot = count_;
+        const uint32_t bank = slot & 1U;
+        const uint32_t eventId = bank == 0 ? EVENT_ID1 : EVENT_ID2;
+        if (bankPending_[bank]) {
+            // This consumes the previous bank's reuse event before overwriting UB.
+            WaitFlag<HardEvent::MTE3_MTE2>(eventId);
+        }
+        SetFlag<HardEvent::S_MTE2>(eventId);
+        WaitFlag<HardEvent::S_MTE2>(eventId);
+        DataCopyPad(banks_[bank], source, {1, rowBytes_, 0, 0, 0}, {false, 0, 0, 0});
+        SetFlag<HardEvent::MTE2_MTE3>(eventId);
+        WaitFlag<HardEvent::MTE2_MTE3>(eventId);
+        DataCopyPad(staging_[static_cast<uint64_t>(batch_) * batchStride_ + slot * rowStride_],
+                    banks_[bank], {1, rowBytes_, 0, 0, 0});
+        SetFlag<HardEvent::MTE3_MTE2>(eventId);
+        bankPending_[bank] = true;
+        // The ID is admitted now; Drain(), not Consider(), waits for its DMA.
+        candidate_.SetValue(slot, token);
+        ++count_;
     }
 
     template <typename TopK>
     __aicore__ inline void Finish(TopK &selected, float decay, bool validMetadata)
     {
+        Drain();
         gatherPending_[0] = false;
         gatherPending_[1] = false;
         if (rowBytes_ > 0 && selected.Count() > 0) {
@@ -170,6 +191,21 @@ public:
     }
 
 private:
+    __aicore__ inline void Drain()
+    {
+        for (uint32_t bank = 0; bank < 2; ++bank) {
+            if (bankPending_[bank]) {
+                const uint32_t eventId = bank == 0 ? EVENT_ID1 : EVENT_ID2;
+                // Drain candidate DMA before final gather reuses both UB banks and events 1/2.
+                WaitFlag<HardEvent::MTE3_MTE2>(eventId);
+                bankPending_[bank] = false;
+            }
+        }
+        // Always consume the gate, including empty/zero-byte/budget-zero calls.
+        SetFlag<HardEvent::MTE3_S>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
+    }
+
     __aicore__ inline int32_t Find(int32_t token)
     {
         uint32_t left = 0;
@@ -185,30 +221,20 @@ private:
         return left < count_ && candidate_.GetValue(left) == token ? static_cast<int32_t>(left) : -1;
     }
 
-    __aicore__ inline void CopyRow(const GlobalTensor<uint8_t> &dst, const GlobalTensor<uint8_t> &src)
-    {
-        SetFlag<HardEvent::S_MTE2>(EVENT_ID0);
-        WaitFlag<HardEvent::S_MTE2>(EVENT_ID0);
-        DataCopyPad(copy_, src, {1, rowBytes_, 0, 0, 0}, {false, 0, 0, 0});
-        SetFlag<HardEvent::MTE2_MTE3>(EVENT_ID0);
-        WaitFlag<HardEvent::MTE2_MTE3>(EVENT_ID0);
-        DataCopyPad(dst, copy_, {1, rowBytes_, 0, 0, 0});
-        SetFlag<HardEvent::MTE3_S>(EVENT_ID0);
-        WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
-    }
-
     uint32_t rowBytes_, budget_, topK_, addressStride_, batch_, count_, fallback_;
     uint64_t rowStride_, batchStride_;
     float thresholdValue_;
     TBuf<TPosition::VECCALC> copyBuf_, candidateBuf_, indexBuf_, stateBuf_;
     TBuf<TPosition::VECCALC> gatherBuf_;
     LocalTensor<uint8_t> copy_;
+    LocalTensor<uint8_t> banks_[2];
     LocalTensor<uint8_t> gather_[2];
     LocalTensor<int32_t> candidate_, index_, state_;
     GlobalTensor<int64_t> addresses_;
     GlobalTensor<float> threshold_, nextThreshold_;
     GlobalTensor<uint8_t> staging_, gathered_;
     GlobalTensor<int32_t> candidates_, stats_, indices_;
+    bool bankPending_[2];
     bool gatherPending_[2];
 };
 } // namespace LIQ950

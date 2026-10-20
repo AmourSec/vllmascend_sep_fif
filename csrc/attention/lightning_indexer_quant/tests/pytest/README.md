@@ -277,7 +277,7 @@ LOCAL pool after the test.
 ## Double-buffered final gather
 
 The Ascend 950 final gather uses two UB banks to overlap one row's MTE3 store
-with the next row's MTE2 load. Candidate prefetch remains synchronous.
+with the next row's MTE2 load.
 The extra bank uses `align32(max(kv_row_bytes, 1))` bytes, at most 4096 bytes.
 All pending stores complete before zero padding or metadata writeback.
 
@@ -291,6 +291,34 @@ python3 -m pytest -q --source=hbm test_qli_boundaries.py
 Repeat with `--source=host` for MemFabric KV. The standalone gather experiment
 was tested on Ascend 950 by the user; its reported 46% benefit applies to that
 measurement, not every workload. The Mac environment cannot repeat that result.
+
+## Asynchronous candidate prefetch
+
+Candidate prefetch also uses alternating UB banks. An admitted candidate ID
+reserves its staging slot immediately; the per-row scalar completion wait is
+deferred so scanning and TopK can proceed while DMA is pending. Before final
+gather, `Drain()` consumes both outstanding candidate bank events and waits
+for MTE3 completion. Only then can the gather phase reuse both UB banks and event
+IDs 1/2. Both phases drain their events before the next request starts.
+
+The candidate and gather phases share both UB banks: the candidate stores
+finish before gather begins. This keeps the UB allocation identical to the
+standalone gather optimization, adding `align32(max(kv_row_bytes, 1))` bytes
+over the original baseline, at most 4096 bytes. The public ABI and host
+workspace size are unchanged.
+
+After rebuilding the combined OPP, run both regression suites in a fresh
+process, then repeat with `--source=host` for MemFabric KV:
+
+```bash
+python3 -m pytest -q --source=hbm test_qli_boundaries.py test_qli_overlap.py
+```
+
+The overlap cases cover INT8/FP8 budgets around bank/tile boundaries, high
+budgets, zero-length requests, graph replay with changed thresholds and
+lengths, and same-core request reuse with unaligned rows. Standalone variants
+03 and 05 were tested by the user; their combined correctness, UB allocation
+and performance still require an Ascend 950 run.
 
 ## Mac limitations
 

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from mtp_resident_cases import make_case, runtime
-from mtp_resident_oracle import DType, Geometry, INDEX_BLOCK, causal_scores, topk
+from mtp_resident_oracle import DType, Geometry, INDEX_BLOCK, KEY_BYTES, causal_scores, topk
 
 pytestmark = pytest.mark.npu
 
@@ -20,23 +20,22 @@ def assert_topk(actual: np.ndarray, expected: np.ndarray) -> None:
 @pytest.mark.parametrize("heads", [32, 64])
 @pytest.mark.parametrize("geometry", [
     Geometry(), Geometry((1, 3, 2), (5, 35, 17)), Geometry((0, 2, 1), (0, 37, 21)),
+    Geometry((2, 1), (19, 7)),
 ])
-def test_qli_mtp_mixed_query_causal_topk(dtype: DType, heads: int, geometry: Geometry) -> None:
+def test_qli_mtp_mixed_query_causal_topk(dtype: DType, heads: int, geometry: Geometry, resident_offload: ModuleType) -> None:
     # Given mixed query counts and independent paged numerical scores.
     torch = runtime()
-    case = make_case(torch, geometry, dtype=dtype, heads=heads)
+    case = make_case(torch, geometry, dtype=dtype, heads=heads, offload=resident_offload)
     expected = topk(causal_scores(case.golden), 7)
-    address_values = np.empty((len(geometry.query_counts), case.table.shape[1] * INDEX_BLOCK), dtype=np.int64)
-    table = case.table.cpu().numpy()
-    for request in range(address_values.shape[0]):
-        for token in range(address_values.shape[1]):
-            page = int(table[request, token // INDEX_BLOCK])
-            address_values[request, token] = case.key[page, token % INDEX_BLOCK].data_ptr()
+    address_values = np.zeros((len(geometry.query_counts), case.table.shape[1] * INDEX_BLOCK), dtype=np.int64)
+    for request, length in enumerate(geometry.key_lengths):
+        for token in range(length):
+            address_values[request, token] = case.source_key_address(request, token)
     addresses = torch.tensor(address_values, dtype=torch.int64, device="npu")
     # When the standalone MTP path scores and gathers each query row.
     sparse, gathered, candidates, stats, _next = torch.ops._C_ascend.npu_lightning_indexer_quant_prefetch(
         case.query, case.key, case.weights, case.query_scale, case.key_scale,
-        case.query_ends, case.key_lengths, case.table, addresses, case.threshold, 128, 4, 7, 0.5,
+        case.query_ends, case.key_lengths, case.table, addresses, case.threshold, KEY_BYTES, 4, 7, 0.5,
     )
     # Then TopK is causal, and gathering uses the request's address row.
     assert_topk(sparse.cpu().numpy(), expected)
@@ -45,10 +44,8 @@ def test_qli_mtp_mixed_query_causal_topk(dtype: DType, heads: int, geometry: Geo
         assert int(stats[row, 0].cpu()) == min(4, visible)
         for position, token in enumerate(sparse[row, 0].cpu().tolist()):
             if token >= 0:
-                request = int(geometry.requests[row])
-                page = int(table[request, token // INDEX_BLOCK])
-                expected_bytes = case.key[page, token % INDEX_BLOCK].view(torch.uint8).reshape(-1)
-                torch.testing.assert_close(gathered[row, position], expected_bytes, rtol=0, atol=0)
+                expected_bytes, _expected_v = case.expected_bytes(row, token)
+                np.testing.assert_array_equal(gathered[row, position].cpu().numpy(), expected_bytes)
             else:
                 assert torch.all(gathered[row, position] == 0)
 
@@ -56,10 +53,10 @@ def test_qli_mtp_mixed_query_causal_topk(dtype: DType, heads: int, geometry: Geo
 @pytest.mark.parametrize("dtype", ["int8", "fp8"])
 @pytest.mark.parametrize("budget", [0, 1, 4, 129])
 @pytest.mark.parametrize("typed_cache", [False, True])
-def test_qli_resident_causal_topk_and_exact_kv(dtype: DType, budget: int, typed_cache: bool) -> None:
+def test_qli_resident_causal_topk_and_exact_kv(dtype: DType, budget: int, typed_cache: bool, resident_offload: ModuleType) -> None:
     # Given host blocks of 24 tokens, index blocks of 16, and multiple score tiles.
     case = make_case(runtime(), Geometry((2, 1), (137, 129), capacity=max(8, budget)),
-                     dtype=dtype, typed_cache=typed_cache)
+                     dtype=dtype, typed_cache=typed_cache, offload=resident_offload)
     scores = causal_scores(case.golden)
     # When resident prefetch admits the first budget candidates.
     sparse, candidates, stats, next_threshold = case.run(budget)
@@ -79,9 +76,9 @@ def test_qli_resident_causal_topk_and_exact_kv(dtype: DType, budget: int, typed_
         np.testing.assert_allclose(next_threshold[row].cpu().numpy(), boundary, rtol=2e-3, atol=2e-3)
 
 
-def test_qli_resident_inactive_padded_row_preserves_all_state() -> None:
+def test_qli_resident_inactive_padded_row_preserves_all_state(resident_offload: ModuleType) -> None:
     # Given T=3 allocated rows but two live queries and a matching cumulative vector.
-    case = make_case(runtime())
+    case = make_case(runtime(), offload=resident_offload)
     case.query_ends.copy_(case.torch.tensor([2, 2], dtype=case.torch.int32, device="npu"))
     case.active.fill_(2)
     persistent = (case.resident_k, case.resident_v, case.last_req_ids, case.slots, case.lru)
@@ -98,11 +95,9 @@ def test_qli_resident_inactive_padded_row_preserves_all_state() -> None:
     np.testing.assert_array_equal(stats[:2].cpu().numpy(), [[4, 4], [4, 4]])
 
 
-def test_qli_resident_memfabric_mapped_host_bases(memfabric_offload: ModuleType | None) -> None:
+def test_qli_resident_memfabric_mapped_host_bases(resident_offload: ModuleType) -> None:
     # Given the existing LOCAL MemFabric fixture and contiguous mapped K/V pools.
-    if memfabric_offload is None:
-        pytest.skip("pass --source=host to exercise MemFabric mapped resident K/V pools")
-    case = make_case(runtime(), offload=memfabric_offload)
+    case = make_case(runtime(), offload=resident_offload)
     # When QLI copies candidates using the pools' DVAs.
     _sparse, candidates, stats, _next = case.run()
     # Then host-backed K and V are byte exact in every admitted resident slot.
@@ -113,9 +108,9 @@ def test_qli_resident_memfabric_mapped_host_bases(memfabric_offload: ModuleType 
 
 
 @pytest.mark.parametrize("dtype", ["int8", "fp8"])
-def test_qli_resident_threshold_filters_candidates_and_updates_ema(dtype: DType) -> None:
+def test_qli_resident_threshold_filters_candidates_and_updates_ema(dtype: DType, resident_offload: ModuleType) -> None:
     # Given per-row finite thresholds derived independently from causal numeric scores.
-    case = make_case(runtime(), dtype=dtype)
+    case = make_case(runtime(), dtype=dtype, offload=resident_offload)
     scores = causal_scores(case.golden)
     thresholds = np.asarray([
         np.mean(np.sort(values)[values.size // 2 - 1:values.size // 2 + 1]) for values in scores

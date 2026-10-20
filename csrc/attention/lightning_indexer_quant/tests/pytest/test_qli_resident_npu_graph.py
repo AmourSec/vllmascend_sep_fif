@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -19,15 +20,18 @@ from mtp_resident_oracle import (
 pytestmark = pytest.mark.npu
 
 
-def test_qli_resident_graph_replay_refreshes_identity_lengths_mapping_and_active_rows() -> None:
+def test_qli_resident_graph_replay_refreshes_identity_lengths_mapping_and_active_rows(
+    resident_offload: ModuleType,
+) -> None:
     # Given an actual captured NPUGraph with persistent input allocations.
     torch = runtime()
-    case = make_case(torch)
+    case = make_case(torch, offload=resident_offload)
     case.run()
     torch.npu.synchronize()
     graph = torch.npu.NPUGraph()
     with torch.npu.graph(graph):
         captured = case.run()
+    torch.npu.synchronize()
     # When replay sees changed identity and poisoned K/V sources at the same addresses.
     case.source_k.fill_(17)
     case.source_v.fill_(29)
@@ -76,13 +80,15 @@ def test_qli_resident_graph_replay_refreshes_identity_lengths_mapping_and_active
 
 
 @pytest.mark.parametrize("host_block", [24, 32])
-def test_qli_resident_handoff_to_unmodified_sparse_plan_transfer(host_block: int) -> None:
+def test_qli_resident_handoff_to_unmodified_sparse_plan_transfer(
+    host_block: int, resident_offload: ModuleType,
+) -> None:
     # Given QLI's actual TopK and prefilled resident slots, with an unstable tail.
     torch = runtime()
     assert hasattr(torch.ops._C_ascend, "npu_sparse_kv_plan_transfer"), (
         "installed extension lacks SparseKvPlan/Transfer"
     )
-    case = make_case(torch, Geometry(host_block=host_block), typed_cache=True)
+    case = make_case(torch, Geometry(host_block=host_block), typed_cache=True, offload=resident_offload)
     assert case.resident_k.dtype == case.resident_v.dtype == torch.bfloat16
     case.query.fill_(1)
     case.weights.fill_(1)
@@ -92,6 +98,7 @@ def test_qli_resident_handoff_to_unmodified_sparse_plan_transfer(host_block: int
         for token in range(4):
             case.key[page, token % INDEX_BLOCK].fill_(100 - token)
     sparse, _candidates, _stats, _next = case.run()
+    torch.npu.synchronize()
     case.stable.fill_(2)
     # Poison source bytes so Plan's required tail invalidation must cause a real refetch.
     case.source_k.fill_(31)

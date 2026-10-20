@@ -8,6 +8,7 @@ from mtp_resident_oracle import Geometry, INDEX_BLOCK, ScoreInputs, causal_score
 
 @pytest.mark.parametrize("geometry", [
     Geometry(), Geometry((1, 3, 2), (5, 35, 17)), Geometry((0, 2, 1), (0, 37, 21)),
+    Geometry((2, 1), (19, 7)),
     Geometry((2, 1), (137, 129), capacity=129), Geometry(host_block=32),
 ])
 def test_mtp_fixture_geometry_is_consistent_without_torch(geometry: Geometry) -> None:

@@ -6,6 +6,11 @@ This implementation extends `LightningIndexerQuant` and exposes
 the model, scheduler, offload manager, or attention integration. Build and test
 instructions are in [tests/pytest/README.md](tests/pytest/README.md).
 
+The target offload path reads attention K/V from mapped host DDR directly into
+the existing resident buffer in NPU HBM. The numerical indexer's quantized K
+tensor is separate and remains in HBM. All MTP/resident device tests use DDR
+payload sources; the older standalone HBM-source option is a diagnostic only.
+
 ## Algorithm and scope
 
 The algorithm adapts the decode intra-query prefetch in
@@ -85,8 +90,9 @@ core assignment, transfer batching, or integrating with attention.
 - Block table: INT32 `[N,max_blocks]`. Only pages covering the visible key
   length need valid physical block IDs.
 - Addresses: INT64 `[N,max_blocks * block_size]`, stored on the NPU. Each valid
-  element points to a contiguous `kv_row_bytes` payload row in HBM or mapped
-  host memory. Payload is independent of the indexer's quantized K tensor.
+  element points to a contiguous `kv_row_bytes` payload row in mapped host
+  memory for the offload path. The older standalone diagnostic also accepts
+  HBM payload addresses. Payload is independent of the indexer's quantized K tensor.
 - Thresholds: FLOAT32 `[T]`, stored on the NPU. All tensor inputs are on the
   same NPU. K is 1..2048, budget is 0..2048, row bytes is 1..4096, and EMA decay
   is finite in `[0,1)`.
@@ -126,8 +132,8 @@ sparse_indices, candidates, stats, next_threshold = (
   `[R,C]`. LRU rows are permutations of `[0,C)` ordered oldest to newest.
   Supply the manager's initialized metadata, not uninitialized tensors.
 - `host_block_table` is INT32 `[N,host_max_blocks]`, separate from the indexer
-  page table. `host_cache_bases` is INT64 `[2]` containing NPU-accessible K/V
-  source base addresses. On 950 DDR sources must use mapped device addresses.
+  page table. `host_cache_bases` is INT64 `[2]` containing the mapped device
+  addresses of the DDR K/V source pools.
   Source layout is contiguous `[host_num_blocks,host_block_size,row_bytes]`
   separately for K and V. The host and indexer block sizes may differ.
 - Budget is 0..min(2048,C); TopK is 1..min(2048,C). Resident statistics are
@@ -207,5 +213,11 @@ adapter. Both prefetch APIs require Ascend 950.
 Development and review were performed on macOS without CANN headers, a device
 compiler, or an NPU. Local Python syntax/reference checks and source review do
 not establish kernel compilation, DMA correctness, graph support, or performance
-on hardware. Run both the HBM and MemFabric host suites on the 950 server before
-using this branch in a model.
+on hardware. Run the MemFabric DDR suites (`--source=host`, the default) on the
+950 server before using this branch in a model.
+
+The [resident/MTP benchmark](tests/pytest/RESIDENT_BENCHMARK.md) measures QLI and
+QLI+Plan/Transfer with mapped DDR sources, batch 1/4/8, query counts 1/2/4 and
+mixed MTP, TopK=2048, and contexts up to 128K. It restores identical cache state
+before each sample and records both prefetch and subsequent Transfer misses.
+No performance result from this runner has been measured on the development Mac.

@@ -5,6 +5,13 @@ multiple causal queries per request. They do not start a model or scheduler.
 The NumPy oracle is independent of Torch and the custom extension. The complete
 resident API and state contract are in [PREFETCH.md](../../PREFETCH.md).
 
+The target path is mapped host DDR to the resident KV buffer in NPU HBM.
+`--source=host` is the default. The numerical indexer's Q/K tensors, weights,
+scales and cache metadata remain in HBM; only the attention K/V payload source
+is in DDR. All MTP/resident device tests use MemFabric DDR allocations.
+`--source=hbm` remains an explicit diagnostic option for the older standalone
+tests and skips the DDR-only MTP/resident cases.
+
 The pinned release lane uses the vLLM release tag `v0.28.0` and the verified
 vLLM commit `84030bbe3d74d99bad477a3d2e37a973ccd8865c` as separate provenance
 records. It uses PyTorch `2.10.0` and `torch-npu==2.10.0.post4`. Host-memory
@@ -112,11 +119,10 @@ are not discovered:
 
 ```bash
 cd csrc/attention/lightning_indexer_quant/tests/pytest
-python3 -m pytest -q --source=hbm
 python3 -m pytest -q --source=host
 ```
 
-Both commands include the INT8 and FP8 GLM-5.2 cases. For only the new profile
+This command includes the INT8 and FP8 GLM-5.2 cases. For only the profile
 and dtype checks, append `test_lightning_indexer_quant_prefetch_glm52.py`.
 
 For score mismatches, first run the deterministic head-mapping regression:
@@ -124,7 +130,7 @@ For score mismatches, first run the deterministic head-mapping regression:
 ```bash
 set -o pipefail
 git rev-parse HEAD
-python3 -m pytest -q --source=hbm --tb=short \
+python3 -m pytest -q --source=host --tb=short \
   test_lightning_indexer_quant_prefetch_scores.py 2>&1 | tee qli-score-regression.log
 ```
 
@@ -135,7 +141,7 @@ threshold expose that score through `next_threshold`. The expected values are
 exact binary fractions for INT8 and exact integers for FP8, checked directly
 and against the NumPy oracle. Failures include the full actual/expected score
 vectors. Attach this log and the commit ID along with the failing random case
-when reporting a numeric regression. These tests can also run with `--source=host`.
+when reporting a numeric regression.
 
 If the 32-head case returns pairwise sums of the expected head scores while
 the 64-head case passes, check for an old 64-head kernel before changing the
@@ -237,7 +243,7 @@ To distinguish a standalone INT8 fault from errors following a failed FP8
 call, run the six INT8 scores cases together in a fresh Python process:
 
 ```bash
-python3 -m pytest -q --source=hbm --tb=long \
+python3 -m pytest -q --source=host --tb=long \
   test_lightning_indexer_quant_prefetch_scores.py -k int8
 ```
 
@@ -245,20 +251,21 @@ If this passes but a mixed run fails, retain the first FP8 error and the first
 subsequent INT8 error, including their full tracebacks. Do not infer a tiling
 cache or numerical defect from the total failure count alone.
 
-`--source=hbm` is the default and uses device-resident KV rows. It is the only
-source exercised by the default test fixture. The event-timing smoke benchmark
-is opt-in and reports NPU event milliseconds for both dtypes without asserting
-a speedup. It uses 32 heads, context length 4097, TopK=2048, and 1152-byte rows:
+The existing standalone event-timing smoke benchmark is opt-in and reports NPU
+event milliseconds for both dtypes without asserting a speedup. It uses DDR
+sources by default, 32 heads, context length 4097, TopK=2048, and 1152-byte rows.
+It is not an MTP/resident performance benchmark:
 
 ```bash
-python3 -m pytest -q --source=hbm --benchmark \
+python3 -m pytest -q --source=host --benchmark \
   test_lightning_indexer_quant_prefetch.py::test_prefetch_event_latency -s
 ```
 
 ## MemFabric host source
 
-Host source is selected explicitly with `--source=host`; it must fail loudly
-when the official fixture or runtime is unavailable. A valid fixture follows
+Host source is selected by default or explicitly with `--source=host`. On an
+available NPU, a missing MemFabric allocator or failed mapping must fail the
+test; there is no HBM fallback. A valid fixture follows
 the MemFabric Hybrid Python API: create `offload.OffloadConfig`, set
 `device_id`, equal `reserve_size` and `alloc_size`, set
 `flags=offload.OFFLOAD_FLAG_GIANT_PAGE`, set `scene=offload.Scene.LOCAL`, and
@@ -271,9 +278,11 @@ The fixture follows the upstream examples
 [`kv_exxchange_offload.py`](https://gitcode.com/Ascend/memfabric_hybrid/blob/master/examples/kv_offload/kv_exxchange_offload/kv_exxchange_offload.py)
 and
 [`local_dram_offload.py`](https://gitcode.com/Ascend/memfabric_hybrid/blob/master/examples/kv_offload/local_dram_offload/local_dram_offload.py).
-It allocates one offload row per logical token, converts every host pointer
-with `get_dva`, keeps the rows alive for the operator call, and tears down the
-LOCAL pool after the test.
+The older standalone fixture allocates individual payload rows. The MTP and
+resident fixtures allocate contiguous paged DDR K/V pools and convert their
+base pointers with `get_dva`. Both keep source allocations alive through all
+operator calls and graph replays, synchronize the NPU, and then tear down the
+LOCAL pool.
 
 ## Double-buffered final gather
 
@@ -286,10 +295,10 @@ Run the context, payload-width, padding and same-core request reuse checks
 after rebuilding the OPP and starting a fresh process:
 
 ```bash
-python3 -m pytest -q --source=hbm test_qli_boundaries.py
+python3 -m pytest -q --source=host test_qli_boundaries.py
 ```
 
-Repeat with `--source=host` for MemFabric KV. The standalone gather experiment
+The standalone gather experiment
 was tested on Ascend 950 by the user; its reported 46% benefit applies to that
 measurement, not every workload. The Mac environment cannot repeat that result.
 
@@ -308,11 +317,11 @@ standalone gather optimization, adding `align32(max(kv_row_bytes, 1))` bytes
 over the original baseline, at most 4096 bytes. The public ABI and host
 workspace size are unchanged.
 
-After rebuilding the combined OPP, run both regression suites in a fresh
-process, then repeat with `--source=host` for MemFabric KV:
+After rebuilding the combined OPP, run both regression suites with DDR KV in a
+fresh process:
 
 ```bash
-python3 -m pytest -q --source=hbm test_qli_boundaries.py test_qli_overlap.py
+python3 -m pytest -q --source=host test_qli_boundaries.py test_qli_overlap.py
 ```
 
 The overlap cases cover INT8/FP8 budgets around bank/tile boundaries, high
@@ -323,6 +332,13 @@ and performance still require an Ascend 950 run.
 
 ## MTP and resident-cache regressions
 
+The [DDR resident/MTP performance runner](RESIDENT_BENCHMARK.md) covers batch
+1/4/8, query counts 1/2/4 and mixed MTP, TopK=2048, and contexts through 128K.
+It compares disabled/enabled prefetch for QLI alone and QLI+Plan/Transfer,
+restoring the same cold/partial/warm cache before every timed invocation.
+It reports actual DDR miss traffic and saves timings to JSONL. Python-only test
+updates do not require rebuilding an already installed MTP/resident operator.
+
 Rebuild OPP and the Torch extension together before running these tests: the
 generated ACLNN signature now includes the optional resident state and host
 layout attributes. The standalone Torch signature is unchanged.
@@ -330,15 +346,15 @@ layout attributes. The standalone Torch signature is unchanged.
 From this directory, run the new device suites in a fresh process:
 
 ```bash
-python3 -m pytest -q --source=hbm \
-  test_qli_mtp_resident.py test_qli_resident_npu_*.py
 python3 -m pytest -q --source=host \
   test_qli_mtp_resident.py test_qli_resident_npu_*.py
 ```
 
-The new numeric, policy and graph matrix uses HBM source pools. Selecting
-`--source=host` additionally enables the dedicated resident MemFabric DVA smoke;
-it does not convert that entire new matrix to DDR sources.
+Every case in this matrix uses mapped DDR payloads, including standalone MTP,
+warm-hit source poisoning, mixed hits/misses, graph replay and post-TopK
+Plan/Transfer. The standalone MTP address table points into its DDR payload
+pool; it does not use the numerical indexer K tensor as a payload source.
+The resident path writes DDR misses directly into the existing HBM cache.
 
 The MTP cases use mixed query counts per request and check each query against
 its own causal visible length. They cover INT8/FP8 with 32/64 heads, separate
@@ -360,3 +376,7 @@ operator binaries, or execute NPU graph/event tests. Static validation may
 still run Python AST parsing and the pure NumPy oracle smoke. No test here
 silently converts a requested host run into an HBM run, and no benchmark result
 is interpreted as a performance gain.
+
+For local CPU checks, select the native and fixture/oracle tests explicitly.
+The legacy HBM diagnostic suite can be collected with `--source=hbm`; its
+device skips provide no evidence for the DDR path.

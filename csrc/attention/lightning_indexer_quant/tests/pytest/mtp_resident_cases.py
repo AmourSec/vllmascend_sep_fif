@@ -74,6 +74,12 @@ class ResidentCase:
         offset = token % self.geometry.host_block
         return (self.source_k[page, offset].cpu().numpy(), self.source_v[page, offset].cpu().numpy())
 
+    def source_key_address(self, request: int, token: int) -> int:
+        page = int(self.host_table[request, token // self.geometry.host_block].cpu())
+        offset = token % self.geometry.host_block
+        base = int(self.bases[0].cpu())
+        return base + (page * self.geometry.host_block + offset) * KEY_BYTES
+
     def assert_payload(self, row: int, token: int) -> None:
         slots = self.slots[row].cpu().numpy()
         matches = np.flatnonzero(slots == token)
@@ -85,7 +91,7 @@ class ResidentCase:
 
 
 def make_case(torch: ModuleType, geometry: Geometry = Geometry(), *, dtype: DType = "int8",
-              heads: int = 32, typed_cache: bool = False, offload: ModuleType | None = None) -> ResidentCase:
+              heads: int = 32, typed_cache: bool = False, offload: ModuleType) -> ResidentCase:
     torch.manual_seed(811)
     g = geometry
     table_cpu = g.table(INDEX_BLOCK)
@@ -109,14 +115,11 @@ def make_case(torch: ModuleType, geometry: Geometry = Geometry(), *, dtype: DTyp
     sources = []
     for width in (KEY_BYTES, VALUE_BYTES):
         payload = torch.randint(0, 256, (host_table_cpu.size, g.host_block, width), dtype=torch.uint8)
-        if offload is None:
-            source = payload.to("npu")
-        else:
-            source = offload.empty(list(payload.shape), dtype=torch.uint8)
-            source.copy_(payload)
+        source = offload.empty(list(payload.shape), dtype=torch.uint8)
+        source.copy_(payload)
         sources.append(source)
     addresses = [
-        source.data_ptr() if offload is None else int(offload.get_dva(source.data_ptr()))
+        int(offload.get_dva(source.data_ptr()))
         for source in sources
     ]
     assert all(addresses), "MemFabric returned a zero DVA"

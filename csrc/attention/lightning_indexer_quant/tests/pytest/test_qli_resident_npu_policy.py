@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import ModuleType
 from typing import Literal
 
 import numpy as np
@@ -12,10 +13,11 @@ from mtp_resident_oracle import Geometry
 pytestmark = pytest.mark.npu
 
 
-def test_qli_resident_warm_hits_do_not_copy_poisoned_sources() -> None:
+def test_qli_resident_warm_hits_do_not_copy_poisoned_sources(resident_offload: ModuleType) -> None:
     # Given a warm row whose source pools are subsequently poisoned.
-    case = make_case(runtime(), Geometry((1,), (37,)))
+    case = make_case(runtime(), Geometry((1,), (37,)), offload=resident_offload)
     case.run()
+    case.torch.npu.synchronize()
     before_k = case.resident_k.clone()
     before_v = case.resident_v.clone()
     case.source_k.fill_(17)
@@ -29,9 +31,9 @@ def test_qli_resident_warm_hits_do_not_copy_poisoned_sources() -> None:
     case.torch.testing.assert_close(case.resident_v, before_v, rtol=0, atol=0)
 
 
-def test_qli_resident_partial_hits_protect_slots_and_rebuild_lru() -> None:
+def test_qli_resident_partial_hits_protect_slots_and_rebuild_lru(resident_offload: ModuleType) -> None:
     # Given two hits interleaved with oldest victims in original LRU order.
-    case = make_case(runtime(), Geometry((1,), (37,)))
+    case = make_case(runtime(), Geometry((1,), (37,)), offload=resident_offload)
     case.last_req_ids.copy_(case.req_ids)
     case.slots.copy_(case.torch.tensor([[1, 20, 2, 21, 22, 23, 24, 25]], dtype=case.torch.int32, device="npu"))
     # When candidates 0..3 hit slots 0/2 and allocate misses in slots 1/3.
@@ -46,10 +48,11 @@ def test_qli_resident_partial_hits_protect_slots_and_rebuild_lru() -> None:
     assert case.torch.all(case.resident_v[0, [0, 2]] == 211)
 
 
-def test_qli_resident_request_identity_reset_refills_poisoned_sources() -> None:
+def test_qli_resident_request_identity_reset_refills_poisoned_sources(resident_offload: ModuleType) -> None:
     # Given warm mappings belonging to a previous request identity.
-    case = make_case(runtime(), Geometry((1,), (37,)))
+    case = make_case(runtime(), Geometry((1,), (37,)), offload=resident_offload)
     case.run()
+    case.torch.npu.synchronize()
     case.source_k.fill_(17)
     case.source_v.fill_(29)
     case.req_ids.add_(100)
@@ -63,10 +66,11 @@ def test_qli_resident_request_identity_reset_refills_poisoned_sources() -> None:
         case.assert_payload(0, token)
 
 
-def test_qli_resident_stable_prefix_invalidates_tail_but_admits_tail_candidates() -> None:
+def test_qli_resident_stable_prefix_invalidates_tail_but_admits_tail_candidates(resident_offload: ModuleType) -> None:
     # Given cached tokens 0..3 but only 0..1 remain stable between invocations.
-    case = make_case(runtime(), Geometry((1,), (37,)))
+    case = make_case(runtime(), Geometry((1,), (37,)), offload=resident_offload)
     case.run()
+    case.torch.npu.synchronize()
     case.stable.fill_(2)
     case.source_k[:, 2:4].fill_(17)
     case.source_v[:, 2:4].fill_(29)
@@ -81,10 +85,10 @@ def test_qli_resident_stable_prefix_invalidates_tail_but_admits_tail_candidates(
 
 @pytest.mark.parametrize("invalid", ["mapping", "cumulative", "host_page"])
 def test_qli_resident_invalid_row_metadata_preserves_cache(
-    invalid: Literal["mapping", "cumulative", "host_page"],
+    invalid: Literal["mapping", "cumulative", "host_page"], resident_offload: ModuleType,
 ) -> None:
     # Given malformed row metadata and sentinel persistent state.
-    case = make_case(runtime())
+    case = make_case(runtime(), offload=resident_offload)
     match invalid:
         case "mapping":
             case.token_to_req[0] = 1
@@ -107,10 +111,10 @@ def test_qli_resident_invalid_row_metadata_preserves_cache(
         case.torch.testing.assert_close(tensor[0], expected, rtol=0, atol=0)
 
 
-def test_qli_resident_capacity_above_2048_uses_dynamic_workspace() -> None:
+def test_qli_resident_capacity_above_2048_uses_dynamic_workspace(resident_offload: ModuleType) -> None:
     # Given a legal cache capacity larger than the candidate/TopK count limit.
     capacity = 2053
-    case = make_case(runtime(), Geometry((1,), (37,), capacity=capacity))
+    case = make_case(runtime(), Geometry((1,), (37,), capacity=capacity), offload=resident_offload)
     # When one candidate is admitted using capacity-sized policy state.
     _sparse, candidates, stats, _next = case.run(budget=1)
     # Then the whole LRU remains a permutation and the new slot is most recent.

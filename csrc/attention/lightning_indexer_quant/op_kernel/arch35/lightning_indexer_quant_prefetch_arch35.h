@@ -32,10 +32,13 @@ public:
         rowStride_ = AlignBytes(rowBytes, 32);
         batchStride_ = AlignBytes((budget > 0 ? budget : 1) * rowStride_, 512);
         pipe->InitBuffer(copyBuf_, 4096);
+        pipe->InitBuffer(gatherBuf_, AlignBytes(rowBytes_ > 0 ? rowBytes_ : 1, 32));
         pipe->InitBuffer(candidateBuf_, AlignBytes((budget > 0 ? budget : 1) * 4, 32));
         pipe->InitBuffer(indexBuf_, AlignBytes(topK * 4, 32));
         pipe->InitBuffer(stateBuf_, 32);
         copy_ = copyBuf_.Get<uint8_t>();
+        gather_[0] = copy_;
+        gather_[1] = gatherBuf_.Get<uint8_t>();
         candidate_ = candidateBuf_.Get<int32_t>();
         index_ = indexBuf_.Get<int32_t>();
         state_ = stateBuf_.Get<int32_t>();
@@ -79,6 +82,12 @@ public:
     template <typename TopK>
     __aicore__ inline void Finish(TopK &selected, float decay, bool validMetadata)
     {
+        gatherPending_[0] = false;
+        gatherPending_[1] = false;
+        if (rowBytes_ > 0 && selected.Count() > 0) {
+            SetFlag<HardEvent::S_MTE2>(EVENT_ID0);
+            WaitFlag<HardEvent::S_MTE2>(EVENT_ID0);
+        }
         for (uint32_t i = 0; i < selected.Count(); ++i) {
             int32_t token = selected.Index(i);
             index_.SetValue(i, token);
@@ -94,7 +103,28 @@ public:
                     static_cast<uint64_t>(batch_) * addressStride_ + token));
                 ++fallback_;
             }
-            CopyRow(gathered_[(static_cast<uint64_t>(batch_) * topK_ + i) * rowBytes_], source);
+            uint32_t bank = i & 1U;
+            uint32_t eventId = bank == 0 ? EVENT_ID1 : EVENT_ID2;
+            if (gatherPending_[bank]) {
+                WaitFlag<HardEvent::MTE3_MTE2>(eventId);
+            }
+            DataCopyPad(gather_[bank], source, {1, rowBytes_, 0, 0, 0}, {false, 0, 0, 0});
+            SetFlag<HardEvent::MTE2_MTE3>(eventId);
+            WaitFlag<HardEvent::MTE2_MTE3>(eventId);
+            DataCopyPad(gathered_[(static_cast<uint64_t>(batch_) * topK_ + i) * rowBytes_],
+                        gather_[bank], {1, rowBytes_, 0, 0, 0});
+            SetFlag<HardEvent::MTE3_MTE2>(eventId);
+            gatherPending_[bank] = true;
+        }
+        for (uint32_t bank = 0; bank < 2; ++bank) {
+            if (gatherPending_[bank]) {
+                uint32_t eventId = bank == 0 ? EVENT_ID1 : EVENT_ID2;
+                WaitFlag<HardEvent::MTE3_MTE2>(eventId);
+            }
+        }
+        if (rowBytes_ > 0 && selected.Count() > 0) {
+            SetFlag<HardEvent::MTE3_S>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
         }
         if (rowBytes_ > 0) {
             for (uint32_t byte = 0; byte < rowBytes_; ++byte) {
@@ -171,12 +201,15 @@ private:
     uint64_t rowStride_, batchStride_;
     float thresholdValue_;
     TBuf<TPosition::VECCALC> copyBuf_, candidateBuf_, indexBuf_, stateBuf_;
+    TBuf<TPosition::VECCALC> gatherBuf_;
     LocalTensor<uint8_t> copy_;
+    LocalTensor<uint8_t> gather_[2];
     LocalTensor<int32_t> candidate_, index_, state_;
     GlobalTensor<int64_t> addresses_;
     GlobalTensor<float> threshold_, nextThreshold_;
     GlobalTensor<uint8_t> staging_, gathered_;
     GlobalTensor<int32_t> candidates_, stats_, indices_;
+    bool gatherPending_[2];
 };
 } // namespace LIQ950
 #endif

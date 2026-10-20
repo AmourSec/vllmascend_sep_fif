@@ -274,6 +274,24 @@ It allocates one offload row per logical token, converts every host pointer
 with `get_dva`, keeps the rows alive for the operator call, and tears down the
 LOCAL pool after the test.
 
+## Double-buffered final gather
+
+The Ascend 950 final gather uses two UB banks to overlap one row's MTE3 store
+with the next row's MTE2 load. Candidate prefetch remains synchronous.
+The extra bank uses `align32(max(kv_row_bytes, 1))` bytes, at most 4096 bytes.
+All pending stores complete before zero padding or metadata writeback.
+
+Run the context, payload-width, padding and same-core request reuse checks
+after rebuilding the OPP and starting a fresh process:
+
+```bash
+python3 -m pytest -q --source=hbm test_qli_boundaries.py
+```
+
+Repeat with `--source=host` for MemFabric KV. The standalone gather experiment
+was tested on Ascend 950 by the user; its reported 46% benefit applies to that
+measurement, not every workload. The Mac environment cannot repeat that result.
+
 ## Mac limitations
 
 The Mac environment cannot import `torch_npu`, load `_C_ascend`, build CANN

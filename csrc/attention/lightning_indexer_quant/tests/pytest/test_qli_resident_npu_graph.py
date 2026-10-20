@@ -82,7 +82,8 @@ def test_qli_resident_handoff_to_unmodified_sparse_plan_transfer(host_block: int
     assert hasattr(torch.ops._C_ascend, "npu_sparse_kv_plan_transfer"), (
         "installed extension lacks SparseKvPlan/Transfer"
     )
-    case = make_case(torch, Geometry(host_block=host_block))
+    case = make_case(torch, Geometry(host_block=host_block), typed_cache=True)
+    assert case.resident_k.dtype == case.resident_v.dtype == torch.bfloat16
     case.query.fill_(1)
     case.weights.fill_(1)
     case.key.fill_(1)

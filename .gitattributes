@@ -1,0 +1,2 @@
+# Keep executable CANN build and packaging scripts portable across hosts.
+csrc/**/*.sh text eol=lf

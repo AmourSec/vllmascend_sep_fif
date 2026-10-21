@@ -92,6 +92,12 @@ the custom OPP package, including its operator prototype library; rebuilding
 only the Torch extension cannot update that prototype. Rerun pytest in a new
 Python process after installation.
 
+The resident handoff uses native BF16 K/V buffers. `SparseKvTransfer` must have
+BF16 entries in the installed OpDef, matching the current source. An older
+locally modified UINT8 OPP can produce `EZ1009` in the resident handoff tests;
+rebuild and install the current OPP package, then start a fresh test process.
+The kernel's internal byte views do not change the public buffer dtype.
+
 The extension's `build_aclnn.sh` removes `csrc/build` before building the OPP
 package. Keep this clean build for the first rebuild after updating the branch:
 historical `.done` stamps may be newer than the stale sources they represent.
@@ -273,6 +279,23 @@ call `offload.initialize(config)` before allocating rows. Allocate rows with
 `offload.empty` or the corresponding offload allocator, then pass
 `offload.get_dva(host_tensor.data_ptr())` to `kv_addresses`; never pass an
 arbitrary pinned-CPU pointer. Call `offload.uninitialize()` during teardown.
+
+Initialization order is part of the host fixture contract:
+`bootstrap_custom_op_env(include_vendor_lib=True)` runs first, followed by
+`offload.initialize(config)`, then `torch.npu.set_device(0)`. Test helpers such
+as `_runtime()` must run after this fixture has initialized the host pool.
+The user observed all-zero DDR payload reads on Ascend 950 with the earlier
+device-first initialization and confirmed that restoring this order resolved
+them. The resident fixture delegates directly to the same initialization
+path. `test_qli_fixture_initialization.py` checks the call order and teardown
+with external-runtime stubs; it does not simulate or validate NPU DMA.
+
+Git attributes require LF for tracked `csrc/**/*.sh` scripts. The host-only
+`csrc/cmake/tests/test_shell_scripts.py` checks this policy, line endings and
+`bash -n` parsing. The portable Plan configuration uses `sparse_kv_plan_cfg`
+because CANN may define `sparse_kv_plan` as a tiling-key macro; the host compiler
+regression in `csrc/attention/sparse_kv_plan/tests/test_namespace_collision.py`
+checks production namespace references with that macro defined.
 
 The fixture follows the upstream examples
 [`kv_exxchange_offload.py`](https://gitcode.com/Ascend/memfabric_hybrid/blob/master/examples/kv_offload/kv_exxchange_offload/kv_exxchange_offload.py)

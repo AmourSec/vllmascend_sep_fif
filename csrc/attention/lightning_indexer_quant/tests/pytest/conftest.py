@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import Iterator
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -42,6 +43,8 @@ def memfabric_offload(request: FixtureRequest) -> Iterator[ModuleType | None]:
         return
     torch = pytest.importorskip("torch", reason="QLI NPU tests require PyTorch")
     pytest.importorskip("torch_npu", reason="QLI NPU tests require Ascend torch_npu")
+    utils = importlib.import_module("vllm_ascend.utils")
+    utils.bootstrap_custom_op_env(include_vendor_lib=True)
     if not torch.npu.is_available():
         pytest.skip("QLI NPU tests require an available Ascend NPU")
     try:
@@ -51,7 +54,6 @@ def memfabric_offload(request: FixtureRequest) -> Iterator[ModuleType | None]:
     pool_mib = request.config.getoption("--memfabric-pool-mib")
     if pool_mib < 1:
         raise pytest.UsageError("--memfabric-pool-mib must be positive")
-    torch.npu.set_device(0)
     config = offload.OffloadConfig()
     config.device_id = 0
     config.reserve_size = pool_mib << 20
@@ -61,6 +63,7 @@ def memfabric_offload(request: FixtureRequest) -> Iterator[ModuleType | None]:
     if offload.initialize(config) != 0:
         pytest.fail("MemFabric offload.initialize failed for LOCAL GIANT_PAGE pool")
     try:
+        torch.npu.set_device(0)
         with tracked_allocations(offload):
             try:
                 yield offload
@@ -74,10 +77,6 @@ def memfabric_offload(request: FixtureRequest) -> Iterator[ModuleType | None]:
 def resident_offload(request: FixtureRequest) -> ModuleType:
     if request.config.getoption("--source") != "host":
         pytest.skip("QLI MTP/resident tests require --source=host for DDR-to-HBM validation")
-    torch = pytest.importorskip("torch", reason="QLI NPU tests require PyTorch")
-    pytest.importorskip("torch_npu", reason="QLI NPU tests require Ascend torch_npu")
-    if not torch.npu.is_available():
-        pytest.skip("QLI NPU tests require an available Ascend NPU")
     offload = request.getfixturevalue("memfabric_offload")
     if offload is None:
         pytest.fail("resident tests require an initialized MemFabric host pool")

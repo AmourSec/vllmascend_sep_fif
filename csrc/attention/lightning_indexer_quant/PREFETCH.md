@@ -159,7 +159,8 @@ It may invalidate and fetch mutable-tail tokens again; that duplicate work is
 intentionally retained. This API does not gather TopK bytes into a separate
 output tensor.
 
-Resident workspace is `T * align512(3*C*4)` bytes plus runtime slack. Capacity
+Resident workspace is `T * align512((4*C + max(1,budget) + 3*256)*4)` bytes
+plus 512 bytes and runtime slack. Capacity
 dependent policy state stays in workspace rather than consuming capacity-sized
 UB allocations.
 

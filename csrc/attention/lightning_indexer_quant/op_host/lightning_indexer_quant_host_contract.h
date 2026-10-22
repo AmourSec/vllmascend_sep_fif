@@ -50,7 +50,13 @@ inline bool WorkspaceBytes(Mode mode, size_t rows, size_t capacity, size_t rowBy
 {
     size_t stride = 0;
     if (mode == Mode::Resident) {
-        if (!Multiply(capacity, 3 * sizeof(int32_t), stride)) return false;
+        size_t elements = 0;
+        if (!Multiply(capacity, 4, elements) ||
+            !Add(elements, std::max<size_t>(1, budget), elements) ||
+            !Add(elements, 3 * 256, elements) ||
+            !Multiply(elements, sizeof(int32_t), stride)) {
+            return false;
+        }
     } else if (mode == Mode::Standalone) {
         if (!Align(rowBytes, 32, stride) || !Multiply(stride, std::max<size_t>(1, budget), stride)) return false;
     } else {
@@ -70,7 +76,7 @@ inline size_t UbBytes(size_t sparse, size_t budget, size_t rowBytes, bool reside
     const size_t prefetch = 4096 + align(std::max<size_t>(1, rowBytes), 32) +
                             align(std::max<size_t>(1, budget) * 4, 32) + align(sparse * 4, 32) + 32;
     return score + topk + (resident ? 8192 + align(std::max<size_t>(1, budget) * 4, 32) +
-                                      align(sparse * 4, 32) + 32 + 1536 + 512 + 512 : prefetch);
+                                      align(sparse * 4, 32) + 32 + 1536 + 544 : prefetch);
 }
 }
 #endif

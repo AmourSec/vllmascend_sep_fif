@@ -19,19 +19,8 @@ public:
         banks_[1] = secondBankBuf_.Get<uint8_t>();
         pending_ = pendingBuf_.Get<int32_t>();
     }
-    __aicore__ inline void BeginTile(uint32_t count)
-    {
-        for (uint32_t i = 0; i < count; ++i) pending_.SetValue(i, 0);
-    }
-    __aicore__ inline void Protect(uint32_t index) { pending_.SetValue(index, 1); }
-    __aicore__ inline bool HasHit(uint32_t index) const { return pending_.GetValue(index) != 0; }
-    // Policy invokes Enqueue only while classifying one <=128-score tile.
-    __aicore__ inline void Enqueue(int32_t token, int32_t slot)
-    {
-        pending_.SetValue(128 + count_, token);
-        pending_.SetValue(256 + count_, slot);
-        ++count_;
-    }
+    __aicore__ inline LocalTensor<int32_t> Pending() const { return pending_; }
+    __aicore__ inline void SetCount(uint32_t count) { count_ = count; }
     __aicore__ inline void Submitted() { ++submitted_; }
     __aicore__ inline uint32_t Count() const { return count_; }
     __aicore__ inline int32_t Token(uint32_t index) const { return pending_.GetValue(128 + index); }
@@ -59,6 +48,10 @@ public:
     template <typename Policy>
     __aicore__ inline void Drain(Policy &policy)
     {
+        if (!busy_[0] && !busy_[1] && submitted_ == 0) {
+            count_ = 0;
+            return;
+        }
         for (uint32_t bank = 0; bank < 2; ++bank) {
             if (busy_[bank]) {
                 const uint32_t event = bank == 0 ? EVENT_ID1 : EVENT_ID2;
@@ -68,7 +61,7 @@ public:
         }
         SetFlag<HardEvent::MTE3_S>(EVENT_ID0);
         WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
-        for (uint32_t i = 0; i < submitted_; ++i) policy.Commit(Slot(i), Token(i));
+        policy.CommitSubmitted(submitted_);
         count_ = submitted_ = 0;
     }
 private:

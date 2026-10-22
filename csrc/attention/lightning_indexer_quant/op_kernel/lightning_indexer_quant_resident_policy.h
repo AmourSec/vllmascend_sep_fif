@@ -17,8 +17,7 @@ namespace LIQ950 {
 enum class ResidentArray : uint32_t { Mapping, Lru, OriginalLru, Classes, MissSlots, Candidates };
 struct ResidentPolicyResult { int32_t admitted; int32_t copiedMisses; };
 
-// Storage owns address spaces: production uses GM metadata/workspace and UB candidates;
-// native tests instantiate this exact algorithm with bounds-checked host arrays.
+// Scalar reference retained for regression tests; production uses ResidentSimtPolicy.
 template <typename Storage>
 class ResidentPolicy {
 public:

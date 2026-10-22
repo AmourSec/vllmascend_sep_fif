@@ -403,3 +403,52 @@ is interpreted as a performance gain.
 For local CPU checks, select the native and fixture/oracle tests explicitly.
 The legacy HBM diagnostic suite can be collected with `--source=hbm`; its
 device skips provide no evidence for the DDR path.
+
+## Resident SIMT regression
+
+The resident path shares SparseKvPlan's hash, block scan, stable slot partition
+and LRU merge implementation. Each nonempty score tile hashes at most 128
+candidates and scans the original LRU in parallel. Hit and miss protection lasts
+for the whole query row; mapping publication runs in a separate VF after both
+K/V payload transfers complete. The standalone Plan operator retains its API and
+semantics. The scalar `ResidentPolicy` header is now a test oracle only.
+
+The row workspace is `align512((4*C + max(1,budget) + 3*256)*4)` bytes. The
+544-byte UB scan replaces two 512-byte scalar metadata windows; peak accounted
+UB at TopK=budget=2048 is 194368 bytes. Copy the shared
+`sparse_kv_plan/op_kernel/sparse_kv_plan_simt.h` and config header along with QLI;
+QLI's declared build dependencies now include SparseKvPlan. Rebuild host tiling
+and the kernel together because workspace sizing changed.
+
+CPU algorithm validation:
+
+```bash
+python3 -m pytest -q test_qli_resident_simt.py test_qli_resident_policy.py \
+  test_qli_host_contract.py
+```
+
+The new native test executes production SIMT helper bodies on 32/64 host
+threads with barriers, shuffle and atomics, comparing against the scalar oracle.
+It covers multiple 128-candidate tiles, budget=2048, capacity=4099, duplicate
+resident hits, exhausted victims, speculative tails and partial publication.
+This does not validate CANN address spaces, cache behavior, hard events or speed.
+
+After installing the rebuilt OPP on 950, start a fresh Python process:
+
+```bash
+python3 -m pytest -q --source=host test_qli_mtp_resident.py \
+  test_qli_resident_npu_*.py
+python3 -m pytest -x -q -s test_qli_resident_benchmark.py \
+  --benchmark --source=host --resident-bench-profile=smoke \
+  --resident-bench-budgets=128,512,2048 \
+  --resident-bench-states=cold,partial,warm \
+  --resident-bench-warmup=3 --resident-bench-iters=10 \
+  --resident-bench-output=qli-resident-simt-smoke.jsonl
+```
+
+Budget=0 is included automatically. Compare QLI and QLI+Plan/Transfer separately
+against the previous binary with identical dtype, shape, cache state, threshold
+mode and sampling options. Use the [full benchmark matrix](RESIDENT_BENCHMARK.md)
+for multibatch MTP, TopK=2048 and contexts up to 131072. No speedup is established
+until these device measurements pass; the per-row complexity still includes a
+capacity scan for every nonempty candidate tile.

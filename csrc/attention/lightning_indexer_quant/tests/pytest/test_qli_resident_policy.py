@@ -8,7 +8,6 @@ import pytest
 
 
 def test_native_resident_policy_and_source_bounds(tmp_path: Path) -> None:
-    """Compile and execute the same policy used by the CANN resident kernel."""
     compiler = shutil.which("c++")
     if compiler is None:
         pytest.skip("native C++ compiler is unavailable")

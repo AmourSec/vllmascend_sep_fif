@@ -6,6 +6,7 @@
 #include "kernel_operator.h"
 #include "lightning_indexer_quant_resident_memory.h"
 #include "lightning_indexer_quant_resident_transfer.h"
+#include "lightning_indexer_quant_resident_simt_policy.h"
 #include "../lightning_indexer_quant_resident_source.h"
 
 namespace LIQ950 {
@@ -26,9 +27,11 @@ public:
         index_ = indexBuf_.Get<int32_t>();
         state_ = stateBuf_.Get<int32_t>();
         memory_.Init(state_);
-        storage_.Init(slotToToken, lruSlots, lastReqIds, workspace, candidate_, &memory_, t_->residentCapacity, pipe);
         transfers_.Init(pipe);
+        policy_.Init(pipe, slotToToken, lruSlots, workspace, candidate_, transfers_.Pending(),
+                     t_->residentCapacity, t_->prefetchBudget);
         reqIds_.SetGlobalBuffer((__gm__ int64_t *)reqIds);
+        lastReqIds_.SetGlobalBuffer((__gm__ int64_t *)lastReqIds);
         stablePrefix_.SetGlobalBuffer((__gm__ int32_t *)stablePrefix);
         hostBlocks_.SetGlobalBuffer((__gm__ int32_t *)hostBlocks);
         hostBases_.SetGlobalBuffer((__gm__ int64_t *)hostBases);
@@ -51,15 +54,15 @@ public:
         metadataOk_ = !valid || ValidateSources();
         valid_ = valid && metadataOk_;
         for (uint32_t i = 0; i < t_->sparseCount; ++i) index_.SetValue(i, -1);
-        storage_.Row(row);
-        policy_.Init(storage_, t_->residentCapacity, t_->prefetchBudget, thresholdValue_);
+        policy_.Row(row, thresholdValue_);
         const int64_t requestId = valid_ ? memory_.Read(reqIds_, request) : 0;
         const int32_t stable = valid_ ? memory_.Read(stablePrefix_, row) : 0;
-        touched_ = valid_;
-        if (!policy_.Reset(requestId, stable, visible, valid_) && valid_) {
+        const bool reuse = valid_ && memory_.Read(lastReqIds_, row) != requestId;
+        if (!policy_.Reset(reuse, stable, visible, valid_) && valid_) {
             valid_ = false;
             metadataOk_ = false;
         }
+        if (valid_ && reuse) memory_.Write(lastReqIds_, row, requestId);
     }
 
     __aicore__ inline void Consider(uint32_t token, float score) { policy_.Consider(token, score); }
@@ -71,7 +74,7 @@ public:
         // before the next tile recycles descriptor storage or either UB bank.
         transfers_.Drain(policy_);
         if (!valid_) return;
-        policy_.FlushTile(transfers_);
+        transfers_.SetCount(policy_.FlushTile());
         for (uint32_t i = 0; i < transfers_.Count(); ++i) {
             uint64_t sourceK = 0, sourceV = 0;
             if (!Source(static_cast<uint32_t>(transfers_.Token(i)), sourceK, sourceV)) {
@@ -92,7 +95,6 @@ public:
         transfers_.Drain(policy_);
         const bool metadata = validMetadata && metadataOk_;
         const auto result = policy_.Finish(metadata);
-        if (touched_) storage_.FinishRow();
         float next = thresholdValue_;
         if (valid_ && metadata) {
             for (uint32_t i = 0; i < selected.Count() && i < t_->sparseCount; ++i)
@@ -162,19 +164,18 @@ private:
 
     const LIQTilingData *t_;
     ResidentMetadataMemory memory_;
-    ResidentStorage storage_;
-    ResidentPolicy<ResidentStorage> policy_;
+    ResidentSimtPolicy policy_;
     ResidentTransfers transfers_;
     TBuf<TPosition::VECCALC> candidateBuf_, indexBuf_, stateBuf_;
     LocalTensor<int32_t> candidate_, index_, state_;
-    GlobalTensor<int64_t> reqIds_, hostBases_;
+    GlobalTensor<int64_t> reqIds_, lastReqIds_, hostBases_;
     GlobalTensor<int32_t> stablePrefix_, hostBlocks_, candidates_, stats_, indices_;
     GlobalTensor<float> threshold_, nextThreshold_;
     GlobalTensor<uint8_t> residentK_, residentV_, gatheredDummy_;
     uint32_t row_ = 0, request_ = 0, visible_ = 0, width_ = 0;
     uint64_t baseK_ = 0, baseV_ = 0;
     float thresholdValue_ = 0.0F;
-    bool valid_ = false, metadataOk_ = false, touched_ = false;
+    bool valid_ = false, metadataOk_ = false;
 };
 } // namespace LIQ950
 #endif

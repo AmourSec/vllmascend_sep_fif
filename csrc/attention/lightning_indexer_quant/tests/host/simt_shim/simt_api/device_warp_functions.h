@@ -1,0 +1,4 @@
+#ifndef LIQ_HOST_SIMT_DEVICE_WARP_FUNCTIONS_H_
+#define LIQ_HOST_SIMT_DEVICE_WARP_FUNCTIONS_H_
+#include "asc_simt.h"
+#endif

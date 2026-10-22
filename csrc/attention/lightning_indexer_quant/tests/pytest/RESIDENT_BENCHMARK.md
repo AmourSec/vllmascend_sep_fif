@@ -1,8 +1,10 @@
 # DDR resident and MTP benchmark
 
 Run from `csrc/attention/lightning_indexer_quant/tests/pytest` on Ascend 950.
-These are Python test changes. If the MTP/resident branch's OPP and Torch
-extension are already installed, this update needs no operator rebuild.
+The installed OPP must match the checked-out kernel and host tiling. The resident
+SIMT change requires rebuilding and installing the OPP, including the updated
+workspace sizing. Its Torch/ACLNN arguments are unchanged; an extension already
+built for the current MTP/resident ABI can be reused.
 
 ## Commands
 

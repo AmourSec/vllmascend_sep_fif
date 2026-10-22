@@ -7,6 +7,7 @@ if (BUILD_OPEN_PROJECT)
         set(lightning_indexer_quant_depends
             attention/quant_lightning_indexer_v2
             attention/lightning_indexer_v2
+            attention/sparse_kv_plan
             CACHE INTERNAL "Dependencies for lightning_indexer_quant"
         )
     endif()

@@ -235,6 +235,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend950 ]]; then
         "sparse_attention_score"
         "sparse_kv_plan"
         "sparse_kv_transfer"
+        "quant_lightning_indexer_sparse_kv"
         "mla_prolog_v3"
         "msa_index_score"
     )

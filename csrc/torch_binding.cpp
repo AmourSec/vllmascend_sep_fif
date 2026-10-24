@@ -55,6 +55,7 @@
 #include "attention/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_310_torch_adpt.h"
 #include "attention/k2q_csr/k2q_csr_torch_adpt.h"
 #include "attention/sparse_kv_plan/sparse_kv_lru_torch_adpt.h"
+#include "attention/quant_lightning_indexer_sparse_kv/quant_lightning_indexer_sparse_kv_torch_adpt.h"
 #include "attention/msa_index_score/msa_index_score_torch_adpt.h"
 #include "attention/sparse_attention_score/sparse_attention_score_torch_adpt.h"
 #include "attention/store_kv_block/store_kv_block_torch_adpt.h"
@@ -2992,6 +2993,31 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
     ops.impl("swap_blocks_batch", torch::kCPU, &vllm_ascend::swap_blocks_batch);
 
 #ifdef VLLM_ASCEND_ENABLE_SPARSE_KV_OFFLOAD
+    ops.def(
+        "npu_quant_lightning_indexer_sparse_kv("
+        "Tensor query, Tensor key, Tensor weights, Tensor query_dequant_scale, "
+        "Tensor key_dequant_scale, Tensor actual_seq_lengths_query, "
+        "Tensor actual_seq_lengths_key, Tensor indexer_block_table, Tensor req_ids, "
+        "Tensor stable_prefix_lens, Tensor visible_seq_lens, Tensor token_to_req, "
+        "Tensor kv_block_table, Tensor active_rows, Tensor(a!) last_req_ids, "
+        "Tensor(b!) slot_to_token, Tensor(c!) lru_slots, Tensor(d!) current_slots, "
+        "Tensor(e!) miss_count, Tensor(f!) miss_tokens, Tensor(g!) miss_slots, "
+        "Tensor(h!) compact_workspace, int capacity, int max_token, int block_size, "
+        "int host_num_blocks) -> Tensor");
+    ops.impl("npu_quant_lightning_indexer_sparse_kv", torch::kPrivateUse1,
+             &vllm_ascend::npu_quant_lightning_indexer_sparse_kv);
+
+    ops.def(
+        "npu_sparse_kv_plan("
+        "Tensor req_ids, Tensor topk_indices, Tensor stable_prefix_lens, "
+        "Tensor visible_seq_lens, Tensor token_to_req, Tensor block_table, "
+        "Tensor active_rows, Tensor(a!) last_req_ids, Tensor(b!) slot_to_token, "
+        "Tensor(c!) lru_slots, Tensor(d!) current_slots, Tensor(e!) miss_count, "
+        "Tensor(f!) miss_tokens, Tensor(g!) miss_slots, Tensor(h!) compact_workspace, "
+        "int topk, int capacity, int max_token, int block_size, int host_num_blocks) -> ()");
+    ops.impl("npu_sparse_kv_plan", torch::kPrivateUse1,
+             &vllm_ascend::npu_sparse_kv_plan);
+
     ops.def(
         "npu_sparse_kv_plan_transfer("
         "Tensor req_ids, Tensor topk_indices, Tensor stable_prefix_lens, "

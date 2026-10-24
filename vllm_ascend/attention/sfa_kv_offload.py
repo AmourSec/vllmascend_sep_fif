@@ -39,7 +39,9 @@ from vllm_ascend.attention.sfa_v1 import (
     AscendSFAImpl,
     AscendSFAMetadata,
     AscendSFAMetadataBuilder,
+    IndexerRuntimeContextMetadata,
     PreprocessType,
+    SFAForwardContext,
 )
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
@@ -56,6 +58,10 @@ from vllm_ascend.utils import enable_dsa_cp
 
 M = TypeVar("M", bound=AscendSFAMetadata)
 _FSA_SELECTION_STATUS_ALIGNMENT = 8
+_FUSED_INDEXER_HEADS = 32
+_FUSED_INDEXER_HEAD_DIM = 128
+_FUSED_INDEXER_TOPK = 2048
+_FUSED_INDEXER_BLOCK_SIZE = 128
 
 
 class _FusedOverlapDecodeCommonInputs(NamedTuple):
@@ -324,6 +330,62 @@ class AscendSFAKVOffloadImpl(AscendSFAImpl):
             and int(getattr(attn_metadata, "num_decodes", 0) or 0) > 0
         )
 
+    def _prepare_indexer_runtime_context(
+        self,
+        indexer_metadata: IndexerRuntimeContextMetadata,
+        attn_metadata: M,
+        parallel_context: SFAForwardContext,
+    ) -> None:
+        super()._prepare_indexer_runtime_context(indexer_metadata, attn_metadata, parallel_context)
+        if (
+            not self.has_indexer
+            or self.skip_topk
+            or self.use_fused_overlap
+            or not self.enable_sparse_li_c8
+            or not self._is_decode_only(attn_metadata)
+            or not self.indexer.use_torch_npu_lightning_indexer
+            or self.indexer.n_head != _FUSED_INDEXER_HEADS
+            or self.indexer.head_dim != _FUSED_INDEXER_HEAD_DIM
+            or self.indexer.topk_tokens != _FUSED_INDEXER_TOPK
+            or self.indexer.c8_k_cache_dtype != torch.float8_e4m3fn
+            or indexer_metadata.block_size != _FUSED_INDEXER_BLOCK_SIZE
+        ):
+            return
+        manager = get_sparse_kv_offload_manager()
+        if (
+            not manager.uses_simt_lru
+            or manager.topk != _FUSED_INDEXER_TOPK
+            or manager.block_size != _FUSED_INDEXER_BLOCK_SIZE
+        ):
+            return
+        if attn_metadata.req_ids_tensor is None or attn_metadata.token_to_req is None:
+            raise RuntimeError("Fused sparse KV indexer requires req_ids_tensor/token_to_req metadata")
+
+        num_decodes = attn_metadata.num_decodes
+        num_decode_tokens = attn_metadata.num_decode_tokens
+        num_indexer_tokens = parallel_context.topk_num_tokens
+        token_to_req = attn_metadata.token_to_req[:num_indexer_tokens]
+        row_to_req = token_to_req.to(dtype=torch.int64)
+        decode_seq_lens, decode_query_lens = self._compute_decode_token_lengths(
+            row_to_req,
+            parallel_context.actual_seq_lengths_query[:num_decodes],
+            parallel_context.actual_seq_lengths_key[:num_decodes],
+            num_indexer_tokens,
+        )
+        stable_prefix_lens = (parallel_context.actual_seq_lengths_key[:num_decodes] - decode_query_lens).clamp_min_(0)
+        context = manager.prepare_fused_indexer_plan(
+            layer_name=self._offload_layer_name(),
+            active_rows=num_decode_tokens,
+            num_indexer_tokens=num_indexer_tokens,
+            req_ids=attn_metadata.req_ids_tensor[:num_decodes],
+            stable_prefix_lens=torch.index_select(stable_prefix_lens, 0, row_to_req),
+            visible_seq_lens=decode_seq_lens,
+            token_to_req=token_to_req,
+            kv_block_table=attn_metadata.block_table[:num_decodes],
+        )
+        indexer_metadata.sparse_kv_plan_context = context
+        attn_metadata.sparse_kv_plan_context = context
+
     @staticmethod
     def _pad_to_input_tokens(
         attn_output: torch.Tensor,
@@ -359,6 +421,8 @@ class AscendSFAKVOffloadImpl(AscendSFAImpl):
         output: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._current_layer_name = layer_name
+        if attn_metadata is not None:
+            attn_metadata.sparse_kv_plan_context = None
         try:
             return super().forward(layer_name, hidden_states, kv_cache, attn_metadata, output)
         finally:
@@ -1102,28 +1166,33 @@ class AscendSFAKVOffloadImpl(AscendSFAImpl):
 
         token_to_req = attn_metadata.token_to_req[:num_decode_tokens]
         row_to_req = token_to_req.to(dtype=torch.int64)
-        decode_cum_query_lens = actual_seq_lengths_query[:num_decodes]
-        decode_seq_lens, decode_query_lens = self._compute_decode_token_lengths(
-            row_to_req,
-            decode_cum_query_lens,
-            actual_seq_lengths_key[:num_decodes],
-            num_decode_tokens,
-        )
-        layer_id = manager._get_offload_layer_id(layer_name)
-        # MTP can reuse Indexer output only after compacting its rows.  It
-        # therefore still needs a device Plan for the new row mapping.
-        reuse_simt_plan = manager.uses_simt_lru and self.skip_topk and layer_id != manager.mtp_layer_id
-        run_lru_plan = not self.skip_topk or (manager.uses_simt_lru and not reuse_simt_plan)
-        if not run_lru_plan:
-            decode_stable_prefix_lens = decode_seq_lens
+        plan_context = attn_metadata.sparse_kv_plan_context
+        if plan_context is not None and plan_context.prepared:
+            decode_seq_lens = plan_context.visible_seq_lens
+            decode_stable_prefix_lens = plan_context.stable_prefix_lens
+            run_lru_plan = False
         else:
-            # Only the query span can be rewritten by the next MTP step.
-            stable_prefix_lens = (actual_seq_lengths_key[:num_decodes] - decode_query_lens).clamp_min_(0)
-            decode_stable_prefix_lens = torch.index_select(
-                stable_prefix_lens,
-                0,
+            decode_seq_lens, decode_query_lens = self._compute_decode_token_lengths(
                 row_to_req,
+                actual_seq_lengths_query[:num_decodes],
+                actual_seq_lengths_key[:num_decodes],
+                num_decode_tokens,
             )
+            layer_id = manager._get_offload_layer_id(layer_name)
+            # MTP can reuse Indexer output only after compacting its rows.  It
+            # therefore still needs a device Plan for the new row mapping.
+            reuse_simt_plan = manager.uses_simt_lru and self.skip_topk and layer_id != manager.mtp_layer_id
+            run_lru_plan = not self.skip_topk or (manager.uses_simt_lru and not reuse_simt_plan)
+            if not run_lru_plan:
+                decode_stable_prefix_lens = decode_seq_lens
+            else:
+                # Only the query span can be rewritten by the next MTP step.
+                stable_prefix_lens = (actual_seq_lengths_key[:num_decodes] - decode_query_lens).clamp_min_(0)
+                decode_stable_prefix_lens = torch.index_select(
+                    stable_prefix_lens,
+                    0,
+                    row_to_req,
+                )
         decode_topk = topk_indices[:num_decode_tokens]
         if run_lru_plan:
             if decode_topk.ndim == 3 and decode_topk.shape[1] == 1:
@@ -1153,20 +1222,27 @@ class AscendSFAKVOffloadImpl(AscendSFAImpl):
         ) = self._resident_views(manager, layer_name, num_decode_tokens)
         request_ids = attn_metadata.req_ids_tensor[:num_decodes]
         decode_req_ids = request_ids if manager.uses_simt_lru else torch.index_select(request_ids, 0, row_to_req)
-        manager.onload_topk_kv(
-            layer_name,
-            num_decode_tokens,
-            num_decodes,
-            attn_metadata.block_table[:num_decodes],
-            decode_topk,
-            resident_slot_indices,
-            decode_req_ids,
-            decode_stable_prefix_lens,
-            decode_seq_lens,
-            token_to_req,
-            capturing=self._in_graph_runtime(),
-            skip_topk=self.skip_topk,
-        )
+        if plan_context is not None and plan_context.prepared:
+            manager.transfer_prepared_indexer_plan(
+                layer_name=layer_name,
+                token_to_req=token_to_req,
+                block_table=attn_metadata.block_table[:num_decodes],
+            )
+        else:
+            manager.onload_topk_kv(
+                layer_name,
+                num_decode_tokens,
+                num_decodes,
+                attn_metadata.block_table[:num_decodes],
+                decode_topk,
+                resident_slot_indices,
+                decode_req_ids,
+                decode_stable_prefix_lens,
+                decode_seq_lens,
+                token_to_req,
+                capturing=self._in_graph_runtime(),
+                skip_topk=self.skip_topk,
+            )
         decode_attn_output = DeviceOperator.execute_sparse_flash_attention_process(
             self,
             ql_nope[:num_decode_tokens],

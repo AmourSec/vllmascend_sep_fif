@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 import torch
 
-_PLAN_ROW_UB_LIMIT_BYTES = 112 * 1024
+from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_indexer import (
+    SparseKVIndexerPlanContext,
+)
+
 _MIN_HASH_CAPACITY = 32
 
 
@@ -73,10 +76,7 @@ class SparseKVSimtLru:
         self.plan_owner_layer_id: int | None = None
 
         row_elements = sparse_kv_plan_workspace_elements(topk, capacity)
-        workspace_elements = (
-            1 if row_elements * torch.int32.itemsize <= _PLAN_ROW_UB_LIMIT_BYTES else max_rows * row_elements
-        )
-        self.compact_workspace = torch.empty(workspace_elements, dtype=torch.int32, device=device)
+        self.compact_workspace = torch.empty((max_rows, row_elements), dtype=torch.int32, device=device)
         initial_lru = torch.arange(capacity, dtype=torch.int32, device=device).view(1, capacity)
         self.layers = [
             _SparseKVSimtLayerState(
@@ -97,6 +97,7 @@ class SparseKVSimtLru:
 
         self._plan_transfer_op = torch.ops._C_ascend.npu_sparse_kv_plan_transfer
         self._transfer_op = torch.ops._C_ascend.npu_sparse_kv_transfer
+        self._fused_indexer_op = torch.ops._C_ascend.npu_quant_lightning_indexer_sparse_kv
 
     def set_active_rows(self, num_rows: int) -> None:
         if num_rows <= 0 or num_rows > self.max_rows:
@@ -145,6 +146,82 @@ class SparseKVSimtLru:
             self.token_size_bytes_v,
         )
         self.plan_owner_layer_id = layer_id
+
+    def select_and_plan(
+        self,
+        context: SparseKVIndexerPlanContext,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        weights: torch.Tensor,
+        query_dequant_scale: torch.Tensor,
+        key_dequant_scale: torch.Tensor,
+        actual_seq_lengths_query: torch.Tensor,
+        actual_seq_lengths_key: torch.Tensor,
+        indexer_block_table: torch.Tensor,
+    ) -> torch.Tensor:
+        state = self.layers[context.layer_id]
+        result = self._fused_indexer_op(
+            query,
+            key,
+            weights,
+            query_dequant_scale,
+            key_dequant_scale,
+            actual_seq_lengths_query,
+            actual_seq_lengths_key,
+            indexer_block_table,
+            context.req_ids,
+            context.stable_prefix_lens,
+            context.visible_seq_lens,
+            context.token_to_req,
+            context.kv_block_table,
+            self.active_rows,
+            state.last_req_ids,
+            state.slot_to_token,
+            state.lru_slots,
+            self.current_slots,
+            state.miss_count,
+            state.miss_tokens,
+            state.miss_slots,
+            self.compact_workspace,
+            self.capacity,
+            self.max_token,
+            self.block_size,
+            self.host_num_blocks,
+        )
+        self.plan_owner_layer_id = context.layer_id
+        return result
+
+    def transfer_prepared_plan(
+        self,
+        *,
+        layer_id: int,
+        token_to_req: torch.Tensor,
+        block_table: torch.Tensor,
+        resident_k: torch.Tensor,
+        resident_v: torch.Tensor,
+    ) -> None:
+        if self.plan_owner_layer_id != layer_id:
+            raise RuntimeError(
+                f"Sparse KV SIMT prepared Plan owner mismatch: expected={layer_id}, actual={self.plan_owner_layer_id}"
+            )
+        state = self.layers[layer_id]
+        self._transfer_op(
+            state.miss_count,
+            state.miss_tokens,
+            state.miss_slots,
+            token_to_req,
+            block_table,
+            state.host_cache_bases,
+            self.active_rows,
+            resident_k,
+            resident_v,
+            self.topk,
+            self.capacity,
+            self.block_size,
+            self.host_num_blocks,
+            self.token_size_bytes_k,
+            self.token_size_bytes_v,
+        )
 
     def transfer_reused_plan(
         self,

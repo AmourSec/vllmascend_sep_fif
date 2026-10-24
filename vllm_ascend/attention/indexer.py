@@ -20,6 +20,9 @@ from vllm.v1.worker.utils import select_common_block_size
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
+from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_indexer import (
+    SparseKVIndexerPlanContext,
+)
 from vllm_ascend.distributed.utils import all_gather_async
 from vllm_ascend.ops.rotary_embedding import get_cos_and_sin_mla
 from vllm_ascend.ops.triton.rope import rope_forward_triton_siso
@@ -70,6 +73,7 @@ class AscendSFAIndexerMetadata:
     # this metadata so the indexer forward interface stays layout-agnostic.
     actual_seq_lengths_query: torch.Tensor | None = None
     actual_seq_lengths_key: torch.Tensor | None = None
+    sparse_kv_plan_context: SparseKVIndexerPlanContext | None = None
     # Decode-token count injected by SFA per forward; the PCP cache-write
     # gather splits the local prefill region on it (all-decode batches skip
     # the gather).
@@ -440,6 +444,19 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
             q_li, q_li_scale = torch_npu.npu_dynamic_quant(q_li.view(-1, self.head_dim), dst_type=self.c8_k_cache_dtype)
             q_li_scale = q_li_scale.to(self.c8_k_scale_cache_dtype)  # [b*s,]
 
+        plan_context = indexer_metadata.sparse_kv_plan_context
+        if plan_context is not None:
+            assert q_li_scale is not None
+            assert q_li_shape_ori is not None
+            return self._run_fused_sparse_kv_indexer(
+                q_li,
+                q_li_scale,
+                q_li_shape_ori,
+                weights,
+                indexer_metadata,
+                plan_context,
+            )
+
         return DeviceOperator.indexer_select_post_process(
             q_li,
             q_li_scale,
@@ -453,6 +470,32 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
             indexer_metadata.actual_seq_lengths_key,
             self.enable_sparse_li_c8,
             self.use_torch_npu_lightning_indexer,
+        )
+
+    def _run_fused_sparse_kv_indexer(
+        self,
+        q_li: torch.Tensor,
+        q_li_scale: torch.Tensor,
+        q_li_shape: torch.Size,
+        weights: torch.Tensor,
+        indexer_metadata: AscendSFAIndexerMetadata,
+        plan_context: SparseKVIndexerPlanContext,
+    ) -> torch.Tensor:
+        fused_query = q_li.view(q_li_shape)
+        if fused_query.shape[0] != plan_context.num_indexer_tokens:
+            raise ValueError(
+                "Fused sparse KV indexer token count mismatch: "
+                f"query={fused_query.shape[0]}, expected={plan_context.num_indexer_tokens}"
+            )
+        return plan_context.select_and_plan(
+            query=fused_query,
+            key=self.k_cache.kv_cache[INDEXER_K_CACHE_SLOT],
+            weights=weights,
+            query_dequant_scale=q_li_scale.view(q_li_shape[:-1]),
+            key_dequant_scale=self.k_cache.kv_cache[INDEXER_SCALE_CACHE_SLOT].squeeze(2),
+            actual_seq_lengths_query=indexer_metadata.actual_seq_lengths_query,
+            actual_seq_lengths_key=indexer_metadata.actual_seq_lengths_key,
+            indexer_block_table=indexer_metadata.block_table,
         )
 
 

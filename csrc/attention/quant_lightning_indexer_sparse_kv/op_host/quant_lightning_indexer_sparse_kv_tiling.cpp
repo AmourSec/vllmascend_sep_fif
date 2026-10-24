@@ -57,7 +57,7 @@ constexpr uint32_t MIN_DATA_CACHE_BYTES = 32U * 1024U;
 static_assert(QLI_UB_LARGE_T_BYTES + PLAN_SCAN_UB_BYTES <=
               TOTAL_UB_BYTES - SYSTEM_UB_RESERVE_BYTES - MIN_DATA_CACHE_BYTES);
 static_assert(QLI_UB_LARGE_T_BYTES + PLAN_SCAN_UB_BYTES +
-                  sparse_kv_plan::PLAN_ROW_UB_LIMIT_BYTES - QLI_TOPK_SLAB_BYTES <=
+                  sparse_kv_plan_cfg::PLAN_ROW_UB_LIMIT_BYTES - QLI_TOPK_SLAB_BYTES <=
               TOTAL_UB_BYTES - SYSTEM_UB_RESERVE_BYTES - MIN_DATA_CACHE_BYTES);
 
 uint64_t PlannerHashCapacity(int64_t topk)
@@ -225,8 +225,8 @@ ge::graphStatus ParsePlannerInfo(gert::TilingContext* context, QuantLightningInd
     }
     const uint64_t rowBytes = info.workspaceRowElements * sizeof(int32_t);
     const uint64_t alignedRowBytes = (rowBytes + 31U) & ~static_cast<uint64_t>(31U);
-    const uint64_t localBytes = sparse_kv_plan::PLAN_SCAN_BYTES +
-        (alignedRowBytes <= sparse_kv_plan::PLAN_ROW_UB_LIMIT_BYTES ? alignedRowBytes : 0U);
+    const uint64_t localBytes = sparse_kv_plan_cfg::PLAN_SCAN_BYTES +
+        (alignedRowBytes <= sparse_kv_plan_cfg::PLAN_ROW_UB_LIMIT_BYTES ? alignedRowBytes : 0U);
     if (localBytes > std::numeric_limits<uint32_t>::max()) {
         OP_LOGE(context->GetNodeName(), "planner local memory size overflow");
         return ge::GRAPH_FAILED;

@@ -184,7 +184,7 @@ __aicore__ inline void QLIVector<QLIT>::InitBuffers(TPipe* pipe)
         mrgValueBuf_.GetWithOffset<uint32_t>(topkSharedTmpSize / sizeof(uint32_t), mrgValueBytes + scoreOutBytes);
     topkOp_.InitBuffers(topkSharedTmpLocal_, indicesOutLocal_);
 
-    pipe->InitBuffer(plannerScanBuf_, sparse_kv_plan::PLAN_SCAN_BYTES);
+    pipe->InitBuffer(plannerScanBuf_, sparse_kv_plan_cfg::PLAN_SCAN_BYTES);
     plannerScanLocal_ = plannerScanBuf_.Get<int32_t>();
 
     // 刷-1
@@ -261,7 +261,7 @@ __aicore__ inline void QLIVector<QLIT>::InitParams(const struct QLICommon::Const
     topkCountAlign256_ = QLICommon::Align(constInfo.sparseCount, (uint64_t)256); // topkCount对齐到256
     const uint64_t rowBytes = tilingData->workspaceRowElements * sizeof(int32_t);
     const uint64_t alignedRowBytes = (rowBytes + 31U) & ~static_cast<uint64_t>(31U);
-    plannerRowUbBytes_ = alignedRowBytes <= sparse_kv_plan::PLAN_ROW_UB_LIMIT_BYTES
+    plannerRowUbBytes_ = alignedRowBytes <= sparse_kv_plan_cfg::PLAN_ROW_UB_LIMIT_BYTES
                              ? static_cast<uint32_t>(alignedRowBytes)
                              : 0U;
 }

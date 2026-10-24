@@ -114,8 +114,11 @@ profile 输出为已预热 planner 状态下的算子级时间，范围仅为 QL
 建议分别以 `--capacity 2048`、`4096`、`8192` 重跑 profile；消除索引重读并不直接
 证明端到端提速，同一 AIV 提前执行 planner 也会影响 QLI 流水调度。
 
-CPU oracle 与内联源码约束检查也可以在无 NPU 环境单独执行。
-这些检查不执行 CANN 内核，不能代替 950 正确性测试：
+CPU oracle、内联源码约束和编译定义回归也可以在无 NPU 环境单独执行。
+编译定义回归需要本机 C++17 编译器（`clang++`、`g++` 或 `c++`），检查
+template key 头文件能否暴露 device tiling 类型、24 个字段的类型/顺序/偏移，
+以及生成的 tiling key 宏是否与 planner 配置命名空间冲突。
+这些检查使用主机编译器和最小模板宏桩，不执行 CANN 内核，不能代替 CANN 编译或 950 正确性测试：
 
 ```bash
 python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite static
@@ -126,7 +129,12 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite static
 
 ## 本地验证记录（2026-10-24，macOS）
 
-- `--suite static` 实际运行：4 个独立 CPU planner oracle 测试及 4 个内联源码约束检查通过。
+- `--suite static` 实际运行：12 项通过，包括 4 个独立 CPU planner oracle 测试、
+  4 个内联源码约束检查、2 个 tiling 定义检查和 2 个命名空间编译回归。
+- 针对 `4fd25e2fb` 的编译反馈，删除未使用的错误 include，补齐 kernel 侧 tiling
+  结构体及 template key 引用；迁移 `d944f3ca2` 的命名空间修复，并适配共享 planner
+  和融合算子中的新增引用。主机编译回归已复现改名前的冲突，并在修复后通过。
+- 本次编译修复涉及的 4 个 Python 文件通过 AST、字节码和 Ruff 检查。
 - 19 个新增或修改的 Python 文件：AST、字节码编译及 Ruff lint/format 检查通过。
 - Torch schema、8 个 mutable alias、22 个 ACLNN 输入及 14 个属性顺序检查通过。
 - vendored 源码保留原 scoring、TopK 分块和排序算法；本次有意修改 vector/kernel
@@ -144,3 +152,4 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite static
 本机缺少 vLLM / torch_npu，完整运行时测试也未执行；相关 import skip 不计为通过。
 Python LSP 类型检查器未安装，未将 Python 语法检查等同于类型检查。
 本地 clang 缺少 CANN 头文件和 AscendC 专用类型，无法完成内核 C++ 类型检查。
+本次运行 `bash format.sh ci` 因未安装 `pre-commit` 而退出；上述 Ruff 检查为单独执行。

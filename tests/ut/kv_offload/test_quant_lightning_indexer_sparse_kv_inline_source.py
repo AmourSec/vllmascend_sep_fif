@@ -76,11 +76,11 @@ def test_scan_and_dead_topk_slab_resources_cover_ub_and_gm_scratch() -> None:
     scan_bytes = ((2 * (threads // warp_size) + control_elements) * 4 + 31) & ~31
     assert scan_bytes == 544
     assert _constant(tiling, "PLAN_SCAN_UB_BYTES") == scan_bytes
-    assert "InitBuffer(plannerScanBuf_, sparse_kv_plan::PLAN_SCAN_BYTES)" in vector
+    assert "InitBuffer(plannerScanBuf_, sparse_kv_plan_cfg::PLAN_SCAN_BYTES)" in vector
     assert "plannerScratchBytes = topkSlabBytes > plannerRowUbBytes_ ? topkSlabBytes : plannerRowUbBytes_" in vector
     assert "reinterpret_cast<__ubuf__ int32_t*>(mrgValueLocal_.GetPhyAddr())" in vector
     assert "plannerContext_.compactWorkspace + static_cast<uint64_t>(row)" in vector
-    assert "alignedRowBytes <= sparse_kv_plan::PLAN_ROW_UB_LIMIT_BYTES" in vector
+    assert "alignedRowBytes <= sparse_kv_plan_cfg::PLAN_ROW_UB_LIMIT_BYTES" in vector
 
 
 def test_capacity_boundary_and_total_t_resource_counts_match_architecture() -> None:

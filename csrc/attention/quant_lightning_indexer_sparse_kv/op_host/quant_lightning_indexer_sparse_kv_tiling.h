@@ -24,7 +24,6 @@
 #include "tiling/platform/platform_ascendc.h"
 #include "tiling/tiling_api.h"
 #include "platform/soc_spec.h"
-#include "op_host/tiling_util.h"
 namespace optiling {
 // ------------------公共定义--------------------------
 struct FusedQliRequiredParaInfo {

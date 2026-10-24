@@ -16,6 +16,7 @@
 #ifndef QUANT_LIGHTNING_INDEXER_SPARSE_KV_TEMPLATE_TILING_KEY_H_
 #define QUANT_LIGHTNING_INDEXER_SPARSE_KV_TEMPLATE_TILING_KEY_H_
 
+#include "quant_lightning_indexer_sparse_kv_tiling_data.h"
 #include "ascendc/host_api/tiling/template_argument.h"
 
 #define LI_TPL_FP16 1

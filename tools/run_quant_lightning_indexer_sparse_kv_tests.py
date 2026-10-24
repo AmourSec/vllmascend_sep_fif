@@ -18,6 +18,8 @@ sys.path[0] = str(REPO_ROOT)
 OP_TESTS = Path("tests/e2e/nightly/single_node/ops/singlecard_ops/quant_lightning_indexer_sparse_kv")
 CPU_TEST = Path("tests/ut/kv_offload/test_sparse_kv_plan_oracle.py")
 INLINE_SOURCE_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_inline_source.py")
+TILING_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_tiling.py")
+NAMESPACE_TEST = Path("csrc/attention/sparse_kv_plan/tests/test_namespace_collision.py")
 RUNTIME_TEST = Path("tests/ut/kv_offload/test_sparse_kv_indexer_fusion.py")
 
 
@@ -167,7 +169,7 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     try:
         if args.suite == "static":
-            run_pytest([CPU_TEST, INLINE_SOURCE_TEST], "static", output, None)
+            run_pytest([CPU_TEST, INLINE_SOURCE_TEST, TILING_TEST, NAMESPACE_TEST], "static", output, None)
             print(f"Completed static; results: {output}")
             return 0
         metadata = preflight(args.device, args.cann_root)
@@ -198,7 +200,12 @@ def main() -> int:
             marker = None if args.suite == "full" else f"npu_{args.suite}"
             run_pytest([OP_TESTS], "operator", output, args.device, marker)
             if args.suite == "full":
-                run_pytest([CPU_TEST, INLINE_SOURCE_TEST, RUNTIME_TEST], "cpu-and-runtime", output, args.device)
+                run_pytest(
+                    [CPU_TEST, INLINE_SOURCE_TEST, TILING_TEST, NAMESPACE_TEST, RUNTIME_TEST],
+                    "cpu-and-runtime",
+                    output,
+                    args.device,
+                )
         print(f"Completed {args.suite}; results: {output}")
         return 0
     except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as error:

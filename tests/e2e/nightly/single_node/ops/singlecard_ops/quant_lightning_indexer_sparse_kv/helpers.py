@@ -190,12 +190,13 @@ def run_fused(case: FusedCase, state: PlannerStateTensors) -> torch.Tensor:
 
 
 def run_indexer(case: FusedCase) -> torch.Tensor:
+    key_scale = case.key_scale.unsqueeze(-1) if case.key_scale.dim() == 2 else case.key_scale
     result = torch_npu.npu_quant_lightning_indexer(
         query=case.query,
         key=case.key,
         weights=case.weights,
         query_dequant_scale=case.query_scale,
-        key_dequant_scale=case.key_scale,
+        key_dequant_scale=key_scale,
         actual_seq_lengths_query=case.actual_seq_lengths_query,
         actual_seq_lengths_key=case.actual_seq_lengths_key,
         block_table=case.indexer_block_table,

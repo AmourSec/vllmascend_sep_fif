@@ -25,16 +25,8 @@ from vllm.triton_utils import HAS_TRITON
 
 from vllm_ascend.device import utils as device_utils
 from vllm_ascend.device.hardware_profile import DeviceAdaptorFamily, get_current_hardware_profile
-from vllm_ascend.ops.triton.fla.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
-from vllm_ascend.ops.triton.fla.solve_tril import solve_tril_16x16_kernel
-from vllm_ascend.ops.triton.fused_gdn_gating import fused_gdn_gating_patch
 from vllm_ascend.quantization.quant_type import QuantType
 from vllm_ascend.quantization.utils import QUANT_DTYPES, get_dynamic_mx_quant_scale_alg
-
-if HAS_TRITON:
-    from vllm_ascend.ops.triton.rms_norm import triton_q_rms  # noqa: F811
-else:
-    triton_q_rms = None  # type: ignore
 
 
 class BaseDeviceAdaptor:
@@ -617,7 +609,9 @@ class BaseDeviceAdaptor:
         if q_norm_without_weight is not None:
             return q_norm_without_weight(q)
 
-        if triton_q_rms is not None:
+        if HAS_TRITON:
+            from vllm_ascend.ops.triton.rms_norm import triton_q_rms
+
             return triton_q_rms(q, eps)
         else:
             dtype = q.dtype
@@ -681,6 +675,8 @@ class BaseDeviceAdaptor:
     def chunk_scaled_dot_kkt_fwd(
         num_core, bh_step, task_num, k, beta, g_cumsum, A, cu_seqlens, chunk_indices, T, B, H, Hg, K, BT, BK
     ):
+        from vllm_ascend.ops.triton.fla.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
+
         chunk_scaled_dot_kkt_fwd_kernel[(num_core,)](
             k=k,
             beta=beta,
@@ -718,6 +714,8 @@ class BaseDeviceAdaptor:
         NT,
         B,
     ):
+        from vllm_ascend.ops.triton.fla.solve_tril import solve_tril_16x16_kernel
+
         extract_slice_stride_1 = LARGE_BLOCK_T // 32
         solve_tril_16x16_kernel[NT, B * H](
             A=A,
@@ -742,6 +740,8 @@ class BaseDeviceAdaptor:
 
     @staticmethod
     def fused_gdn_gating(A_log: torch.Tensor, a: torch.Tensor, b: torch.Tensor, dt_bias: torch.Tensor):
+        from vllm_ascend.ops.triton.fused_gdn_gating import fused_gdn_gating_patch
+
         return fused_gdn_gating_patch(A_log, a, b, dt_bias)
 
     @staticmethod
@@ -1231,7 +1231,9 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
         if q_norm_without_weight is not None:
             return q_norm_without_weight(q)
 
-        if triton_q_rms is not None:
+        if HAS_TRITON:
+            from vllm_ascend.ops.triton.rms_norm import triton_q_rms
+
             return triton_q_rms(q, eps)
         else:
             dtype = q.dtype
@@ -1379,6 +1381,8 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
     def chunk_scaled_dot_kkt_fwd(
         num_core, bh_step, task_num, k, beta, g_cumsum, A, cu_seqlens, chunk_indices, T, B, H, Hg, K, BT, BK
     ):
+        from vllm_ascend.ops.triton.fla.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
+
         chunk_scaled_dot_kkt_fwd_kernel[(num_core,)](
             k=k,
             beta=beta,
@@ -1416,6 +1420,8 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
         NT,
         B,
     ):
+        from vllm_ascend.ops.triton.fla.solve_tril import solve_tril_16x16_kernel
+
         solve_tril_16x16_kernel[NT, B * H](
             A=A,
             Ad=Ad,
@@ -1439,6 +1445,8 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
 
     @staticmethod
     def fused_gdn_gating(A_log: torch.Tensor, a: torch.Tensor, b: torch.Tensor, dt_bias: torch.Tensor):
+        from vllm_ascend.ops.triton.fused_gdn_gating import fused_gdn_gating_patch
+
         return fused_gdn_gating_patch(A_log, a, b, dt_bias)
 
     @staticmethod

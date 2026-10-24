@@ -22,16 +22,28 @@ TILING_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_t
 NAMESPACE_TEST = Path("csrc/attention/sparse_kv_plan/tests/test_namespace_collision.py")
 HELPERS_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_helpers.py")
 SCORES_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_scores.py")
+IMPORT_TEST = Path("tests/ut/device/test_device_op_import.py")
+RUNNER_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_runner.py")
 RUNTIME_TEST = Path("tests/ut/kv_offload/test_sparse_kv_indexer_fusion.py")
+STATIC_TESTS = (
+    CPU_TEST,
+    INLINE_SOURCE_TEST,
+    TILING_TEST,
+    NAMESPACE_TEST,
+    HELPERS_TEST,
+    SCORES_TEST,
+    IMPORT_TEST,
+    RUNNER_TEST,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("static", "smoke", "inline", "full", "stress", "profile"),
+        choices=("static", "smoke", "inline", "runtime", "full", "stress", "profile"),
         default="smoke",
-        help="static runs the Mac-safe source model; inline targets UB handoff and row-scheduler hazards",
+        help="static runs CPU checks; inline tests UB handoff; runtime runs Python fusion integration only",
     )
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
@@ -171,12 +183,7 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     try:
         if args.suite == "static":
-            run_pytest(
-                [CPU_TEST, INLINE_SOURCE_TEST, TILING_TEST, NAMESPACE_TEST, HELPERS_TEST, SCORES_TEST],
-                "static",
-                output,
-                None,
-            )
+            run_pytest(list(STATIC_TESTS), "static", output, None)
             print(f"Completed static; results: {output}")
             return 0
         metadata = preflight(args.device, args.cann_root)
@@ -203,24 +210,14 @@ def main() -> int:
                 + (["--trace"] if args.trace else []),
                 output / "profile.log",
             )
+        elif args.suite == "runtime":
+            run_pytest([RUNTIME_TEST], "runtime", output, args.device)
         else:
             marker = None if args.suite == "full" else f"npu_{args.suite}"
             run_pytest([OP_TESTS], "operator", output, args.device, marker)
             if args.suite == "full":
-                run_pytest(
-                    [
-                        CPU_TEST,
-                        INLINE_SOURCE_TEST,
-                        TILING_TEST,
-                        NAMESPACE_TEST,
-                        HELPERS_TEST,
-                        SCORES_TEST,
-                        RUNTIME_TEST,
-                    ],
-                    "cpu-and-runtime",
-                    output,
-                    args.device,
-                )
+                run_pytest(list(STATIC_TESTS), "cpu", output, None)
+                run_pytest([RUNTIME_TEST], "runtime", output, args.device)
         print(f"Completed {args.suite}; results: {output}")
         return 0
     except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as error:

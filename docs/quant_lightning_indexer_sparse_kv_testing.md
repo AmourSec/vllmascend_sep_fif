@@ -96,6 +96,9 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite inline
 # 完整正确性矩阵，包含 batch 32 + 140k + ragged MTP，以及 CPU/runtime 单元测试
 python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite full
 
+# 仅复测 Python 集成：持久 workspace、padded query、MTP 和 attention 前 transfer
+python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite runtime
+
 # 单独重跑长上下文与 batch 32 压力用例
 python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite stress
 
@@ -105,6 +108,8 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py \
 ```
 
 结果默认写入 `test-results/qli-<时间>/`，可用 `--output DIR` 指定目录。
+`full` 分别执行并保存 `operator`、`cpu`、`runtime` 三批结果；运行时测试收集失败
+不会阻止前一批 CPU 检查完成，但整个命令仍返回失败，不忽略错误或跳过测试。
 `--cann-root PATH` 可指定本机 CANN 根目录；默认读取已 source 的 `ASCEND_HOME_PATH`，
 否则使用 `/usr/local/Ascend/cann`。脚本读取版本文件的 `version` 字段并要求为 9.1.0，
 不从 torch_npu 版本号推断 CANN 版本。安装信息路径依据
@@ -178,5 +183,26 @@ Python LSP 类型检查器未安装，未将 Python 语法检查等同于类型�
 
 本次 Mac 验证：集成 `--suite static` 19 项全部通过（原 12 项，加 2 项基线调用契约、
 5 项评分/选择检查），7 个 Python 文件通过 Ruff lint/format、AST 和字节码检查。
-修订后的 NPU 测试尚未执行；原反馈中的 41 项差分测试需在 scale 修复后重新运行，
-不能用 CPU 检查推断它们已在 950 上通过。
+上述 Mac 记录写入时尚未执行修订后的 NPU 测试，不能用 CPU 检查推断 950 结果。
+后续由用户在 950 上完成的验证见下节。
+
+## 后续 950 验证与 Python 导入修复
+
+用户随后反馈：CANN 编译安装成功，`smoke` 4/4、`full` 的算子测试 50/50 通过，
+单独执行的 CPU 检查 19/19 通过。剩余的 7 项 Python 集成测试因收集阶段循环导入
+未执行，因此尚不能将整个 `full` 记为通过。
+
+循环由 `device_op` 在定义 `DeviceOperator` 前导入 Triton 子模块触发：Python 先执行
+`ops/__init__.py` 的 MoE 注册，MoE 模块又导入尚未完成初始化的 `DeviceOperator`。
+本次将四处 Triton 导入延迟到 Base/A5 适配器的调用方法内，保留硬件选择、
+`HAS_TRITON` 分支、传入的 RMS callable、fallback 计算及 kernel 参数。
+没有通过重排测试导入或跳过运行时测试来绕开问题。
+
+本次仅涉及 Python，无需重编 CANN 算子包。在已配置的 950 环境更新代码后，先运行
+`--suite runtime`，再运行 `--suite full`。运行时批次成功应执行 7 项测试，任何收集错误
+或依赖缺失仍会使脚本失败。
+
+本次 Mac 验证：`--suite static` 29 项通过，新增 7 项 device 导入/分派/隔离回归及
+3 项测试脚本路由回归；4 个 Python 文件的 Ruff、AST 和字节码检查通过。
+device 回归执行真实模块源码，并在外部依赖替身中构造反向导入，验证延迟导入及调用参数；
+它不等同于完整 vLLM/torch_npu 环境下的启动验证。950 上的 7 项集成测试仍需复测。

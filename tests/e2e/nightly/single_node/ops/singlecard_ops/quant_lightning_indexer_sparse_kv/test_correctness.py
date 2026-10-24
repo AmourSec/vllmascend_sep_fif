@@ -17,7 +17,6 @@ from .assertions import (  # noqa: E402
 )
 from .helpers import (  # noqa: E402
     HEAD_DIM,
-    QUERY_HEADS,
     TOPK,
     make_case,
     make_state,
@@ -164,37 +163,6 @@ def test_axis0_strided_key_and_scale_match_contiguous_and_baseline() -> None:
     torch.testing.assert_close(strided_indices, baseline_indices, rtol=0, atol=0)
     assert_states_equal(strided_state, contiguous_state)
     assert_states_equal(strided_state, baseline_state)
-
-
-def test_unique_margin_selection_has_no_tie_dependent_assertion() -> None:
-    # Given: 4096 keys encode distinct 12-bit scores across weighted query heads.
-    seq_len = 4096
-    case = make_case([seq_len], [1])
-    key_bits = torch.zeros((seq_len, 1, HEAD_DIM), dtype=torch.int8)
-    token_ids = torch.arange(seq_len, dtype=torch.int32)
-    for bit in range(12):
-        key_bits[:, 0, bit] = ((token_ids >> bit) & 1).to(torch.int8)
-    query_cpu = torch.zeros((1, QUERY_HEADS, HEAD_DIM), dtype=torch.int8)
-    weights_cpu = torch.zeros((1, QUERY_HEADS), dtype=torch.bfloat16)
-    for bit in range(12):
-        query_cpu[0, bit, bit] = 1
-        weights_cpu[0, bit] = 1 << bit
-    case = replace(
-        case,
-        query=query_cpu.to(torch.float8_e4m3fn).npu(),
-        key=key_bits.reshape(seq_len // 128, 128, 1, HEAD_DIM).to(torch.float8_e4m3fn).npu(),
-        weights=weights_cpu.npu(),
-        query_scale=torch.ones_like(case.query_scale),
-        key_scale=torch.ones_like(case.key_scale),
-    )
-    state = make_state(case)
-
-    # When: fused TopK selects the strictly separated upper half.
-    indices = run_fused(case, state)
-    torch_npu.npu.synchronize()
-
-    # Then: set equality proves selection without depending on unspecified TopK ordering.
-    assert set(indices[0].cpu().tolist()) == set(range(TOPK, seq_len))
 
 
 def test_duplicate_semantics_match_oracle_for_standalone_planner() -> None:

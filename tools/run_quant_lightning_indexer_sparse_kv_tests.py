@@ -20,6 +20,8 @@ CPU_TEST = Path("tests/ut/kv_offload/test_sparse_kv_plan_oracle.py")
 INLINE_SOURCE_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_inline_source.py")
 TILING_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_tiling.py")
 NAMESPACE_TEST = Path("csrc/attention/sparse_kv_plan/tests/test_namespace_collision.py")
+HELPERS_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_helpers.py")
+SCORES_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_scores.py")
 RUNTIME_TEST = Path("tests/ut/kv_offload/test_sparse_kv_indexer_fusion.py")
 
 
@@ -169,7 +171,12 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     try:
         if args.suite == "static":
-            run_pytest([CPU_TEST, INLINE_SOURCE_TEST, TILING_TEST, NAMESPACE_TEST], "static", output, None)
+            run_pytest(
+                [CPU_TEST, INLINE_SOURCE_TEST, TILING_TEST, NAMESPACE_TEST, HELPERS_TEST, SCORES_TEST],
+                "static",
+                output,
+                None,
+            )
             print(f"Completed static; results: {output}")
             return 0
         metadata = preflight(args.device, args.cann_root)
@@ -201,7 +208,15 @@ def main() -> int:
             run_pytest([OP_TESTS], "operator", output, args.device, marker)
             if args.suite == "full":
                 run_pytest(
-                    [CPU_TEST, INLINE_SOURCE_TEST, TILING_TEST, NAMESPACE_TEST, RUNTIME_TEST],
+                    [
+                        CPU_TEST,
+                        INLINE_SOURCE_TEST,
+                        TILING_TEST,
+                        NAMESPACE_TEST,
+                        HELPERS_TEST,
+                        SCORES_TEST,
+                        RUNTIME_TEST,
+                    ],
                     "cpu-and-runtime",
                     output,
                     args.device,

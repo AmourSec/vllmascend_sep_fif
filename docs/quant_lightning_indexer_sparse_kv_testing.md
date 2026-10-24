@@ -45,6 +45,9 @@ dtype/layout 依据本仓库 A5 `DeviceOperator.indexer_select_post_process` 的
 还覆盖重复 token、LRU 顺序、重复调用、请求复用、MTP 回滚、无效 planner 页、
 padding、graph capture/replay、非法 shape/dtype 和有确定分数间隔的 TopK 选择。
 刻意构造的同分样本按各自产生的合法索引检查状态，避免把未规定的 tie 顺序当作正确性要求。
+FP8/BF16 路径在 TopK 前把最终分数按 `CAST_ROUND` 转成 BF16；数学上不同的
+FP32 分数仍可能落入同一个排序值。确定性选择用例检查 BF16 舍入后第 K 与 K+1 名
+之间仍有严格间隔，并覆盖 4096 token 和真正跨越 16K trunk 的 32768 token 场景。
 内联路径另外检查总 query 行数 64/65 的分块切换、同一 AIV 多行复用、
 跨多个 TopK trunk 的最终合并，以及混合空序列和全空序列的单次状态更新。
 行数 64/65 与容量 2048/7168/7169 交叉覆盖，包括动态 UB 最大的
@@ -114,7 +117,8 @@ profile 输出为已预热 planner 状态下的算子级时间，范围仅为 QL
 建议分别以 `--capacity 2048`、`4096`、`8192` 重跑 profile；消除索引重读并不直接
 证明端到端提速，同一 AIV 提前执行 planner 也会影响 QLI 流水调度。
 
-CPU oracle、内联源码约束和编译定义回归也可以在无 NPU 环境单独执行。
+CPU oracle、内联源码约束、编译定义及测试输入回归也可以在无 NPU 环境单独执行。
+测试输入回归需要 CPU 版 PyTorch，检查基线 QLI 的 scale 维度，以及 BF16 后的选择边界。
 编译定义回归需要本机 C++17 编译器（`clang++`、`g++` 或 `c++`），检查
 template key 头文件能否暴露 device tiling 类型、24 个字段的类型/顺序/偏移，
 以及生成的 tiling key 宏是否与 planner 配置命名空间冲突。
@@ -129,7 +133,7 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite static
 
 ## 本地验证记录（2026-10-24，macOS）
 
-- `--suite static` 实际运行：12 项通过，包括 4 个独立 CPU planner oracle 测试、
+- 编译修复提交 `33c95a56c` 的 `--suite static` 实际运行：12 项通过，包括 4 个独立 CPU planner oracle 测试、
   4 个内联源码约束检查、2 个 tiling 定义检查和 2 个命名空间编译回归。
 - 针对 `4fd25e2fb` 的编译反馈，删除未使用的错误 include，补齐 kernel 侧 tiling
   结构体及 template key 引用；迁移 `d944f3ca2` 的命名空间修复，并适配共享 planner
@@ -153,3 +157,26 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py --suite static
 Python LSP 类型检查器未安装，未将 Python 语法检查等同于类型检查。
 本地 clang 缺少 CANN 头文件和 AscendC 专用类型，无法完成内核 C++ 类型检查。
 本次运行 `bash format.sh ci` 因未安装 `pre-commit` 而退出；上述 Ruff 检查为单独执行。
+
+## 950 运行反馈后的测试修正
+
+用户反馈前述三个编译问题修复后，CANN 9.1.0 算子包编译安装成功；旧版 NPU 测试为
+42 项失败、6 项通过。该结果不代表本次修订后的测试结果。
+
+- 基线 QLI 要求 `key_dequant_scale` 为 `[blocks, 128, 1]`。测试只在 `run_indexer`
+  调用边界将 rank2 转成 rank3；保留融合 adapter 的 rank2/rank3 和 stride 覆盖。
+- 原 12 位编码用例的分数在 FP32 中互异，但最终 BF16 排序中 2044～2055 全部等于
+  2048。严格更高的分数有 2040 个，因此该同分组任取 8 个均合法；这能解释反馈中
+  2044～2047 与 2052～2055 的交换。4096 token 只使用一个 16K trunk。
+- 保留原编码作为同分边界用例，分别检查基线/融合输出的唯一性、合法选择集合和
+  各自的 planner 状态；另加 BF16 后仍有严格分组间隔的选择测试。
+
+舍入参考依据 [CANN 9.1.0 RoundMode 文档](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendcopapi/docs/en/api/SIMD-API/basic_api/reg_vector_compute/aux_data_types/RoundMode.md)
+中的 `CAST_ROUND`，不能直接用 PyTorch 默认 BF16 转换替代其半值舍入行为。
+本次仅修改测试及测试入口，不修改内核；已编译安装的环境 pull 后即可重跑
+`--suite static`、`--suite smoke`、`--suite inline` 和 `--suite full`。
+
+本次 Mac 验证：集成 `--suite static` 19 项全部通过（原 12 项，加 2 项基线调用契约、
+5 项评分/选择检查），7 个 Python 文件通过 Ruff lint/format、AST 和字节码检查。
+修订后的 NPU 测试尚未执行；原反馈中的 41 项差分测试需在 scale 修复后重新运行，
+不能用 CPU 检查推断它们已在 950 上通过。

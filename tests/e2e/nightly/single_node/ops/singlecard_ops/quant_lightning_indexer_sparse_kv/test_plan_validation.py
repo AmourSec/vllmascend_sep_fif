@@ -101,7 +101,83 @@ def test_plan_supports_capacity_four_with_duplicate_topk() -> None:
 
     # Then: only the first duplicate is assigned and all unique misses fit.
     torch.testing.assert_close(case.current_slots[0, :4].cpu(), torch.tensor([0, -1, 1, 2], dtype=torch.int32))
+    torch.testing.assert_close(case.current_slots[0, 4:].cpu(), torch.full((2044,), -1, dtype=torch.int32))
+    torch.testing.assert_close(case.slot_to_token.cpu(), torch.tensor([[3, 1, 2, -1]], dtype=torch.int32))
+    torch.testing.assert_close(case.lru_slots.cpu(), torch.tensor([[3, 0, 1, 2]], dtype=torch.int32))
     torch.testing.assert_close(case.miss_count.cpu(), torch.tensor([3], dtype=torch.int32))
+    torch.testing.assert_close(
+        case.miss_tokens[0, :4].cpu(), torch.tensor([3, 1, 2, -1], dtype=torch.int32)
+    )
+    torch.testing.assert_close(case.miss_slots[0, :4].cpu(), torch.tensor([0, 1, 2, -1], dtype=torch.int32))
+
+
+@pytest.mark.npu_inline
+@pytest.mark.parametrize("capacity", [4, 16384])
+@pytest.mark.parametrize(
+    ("resident", "prefix", "expected_current", "expected_misses"),
+    [
+        (False, [3, 3, 1, 2], [0, -1, 1, 2], [3, 1, 2]),
+        (True, [3, 3, 1, 2], [0, -1, 1, 2], [1, 2]),
+        (True, [3, 3, 1, 1, 2, 2], [0, -1, 1, -1, 2, -1], [1, 2]),
+    ],
+)
+def test_plan_deduplicates_repeated_tokens_in_cold_hit_and_mixed_rows(
+    capacity: int,
+    resident: bool,
+    prefix: list[int],
+    expected_current: list[int],
+    expected_misses: list[int],
+) -> None:
+    # Given: a full TopK row contains repeated tokens, optionally with token 3 already resident.
+    case = _make_case(topk=2048, capacity=capacity)
+    case.topk_indices.fill_(prefix[-1])
+    case.topk_indices[0, : len(prefix)] = torch.tensor(prefix, dtype=torch.int32, device="npu")
+    if capacity > 4:
+        case = replace(
+            case,
+            compact_workspace=torch.empty(
+                (1, _workspace_elements(case.topk, capacity)), dtype=torch.int32, device="npu"
+            ),
+        )
+    if resident:
+        case.stable_prefix_lens.fill_(16)
+        case.last_req_ids.fill_(100)
+        case.slot_to_token.fill_(-1)
+        case.slot_to_token[0, 0] = 3
+        case.lru_slots[0] = torch.arange(capacity, dtype=torch.int32, device="npu")
+        case.lru_slots[0, :-1] = torch.arange(1, capacity, dtype=torch.int32, device="npu")
+        case.lru_slots[0, -1] = 0
+
+    # When: standalone Plan consumes the duplicated row through either UB or GM scratch.
+    _run_plan(case)
+    torch_npu.npu.synchronize()
+
+    # Then: the first occurrence owns the slot; repeated positions never become misses or residents.
+    expected_current_tensor = torch.full((2048,), -1, dtype=torch.int32)
+    expected_current_tensor[: len(expected_current)] = torch.tensor(expected_current, dtype=torch.int32)
+    torch.testing.assert_close(case.current_slots[0].cpu(), expected_current_tensor)
+    expected_slot_tokens = torch.full((capacity,), -1, dtype=torch.int32)
+    slot_tokens = [3, *expected_misses] if resident else expected_misses
+    expected_slot_tokens[: len(slot_tokens)] = torch.tensor(slot_tokens, dtype=torch.int32)
+    torch.testing.assert_close(case.slot_to_token[0].cpu(), expected_slot_tokens)
+    miss_start_slot = 1 if resident else 0
+    expected_lru = (
+        list(range(miss_start_slot + len(expected_misses), capacity))
+        + list(range(miss_start_slot, miss_start_slot + len(expected_misses)))
+        + ([0] if resident else [])
+    )
+    torch.testing.assert_close(
+        case.lru_slots[0].cpu(), torch.tensor(expected_lru, dtype=torch.int32)
+    )
+    expected_miss_tokens = torch.full((2048,), -1, dtype=torch.int32)
+    expected_miss_tokens[: len(expected_misses)] = torch.tensor(expected_misses, dtype=torch.int32)
+    expected_miss_slots = torch.full((2048,), -1, dtype=torch.int32)
+    expected_miss_slots[: len(expected_misses)] = (
+        torch.arange(len(expected_misses), dtype=torch.int32) + miss_start_slot
+    )
+    torch.testing.assert_close(case.miss_tokens[0].cpu(), expected_miss_tokens)
+    torch.testing.assert_close(case.miss_slots[0].cpu(), expected_miss_slots)
+    torch.testing.assert_close(case.miss_count.cpu(), torch.tensor([len(expected_misses)], dtype=torch.int32))
 
 
 @pytest.mark.npu_inline

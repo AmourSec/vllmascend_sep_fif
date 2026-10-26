@@ -50,11 +50,27 @@ def test_duplicate_topk_uses_first_position_and_last_resident_owner() -> None:
     # When: the planner handles duplicate selected and resident tokens.
     after = sparse_kv_plan_reference(inputs, before)
 
-    # Then: only the first selection is a hit and the last LRU owner supplies it.
-    assert after.current_slots == [[0, 1, 3, -1]]
+    # Then: repeated selections stay unassigned, preserving slots for distinct misses.
+    assert after.current_slots == [[0, -1, 1, 3]]
     assert after.miss_count == [2]
-    assert after.miss_tokens == [[3, 9, -1, -1]]
+    assert after.miss_tokens == [[9, 10, -1, -1]]
+    assert after.miss_slots == [[1, 3, -1, -1]]
+    assert after.slot_to_token == [[3, 9, 3, 10]]
     assert after.lru_slots == [[1, 3, 2, 0]]
+
+
+def test_duplicate_cold_misses_allocate_one_slot_per_token() -> None:
+    before = _state(rows=1, topk=2048, fill=-1)
+    inputs = _inputs([[3, 3, 1, 2] + [3] * 2044], active_rows=1)
+
+    after = sparse_kv_plan_reference(inputs, before)
+
+    assert after.current_slots == [[0, -1, 1, 2] + [-1] * 2044]
+    assert after.miss_count == [3]
+    assert after.miss_tokens == [[3, 1, 2] + [-1] * 2045]
+    assert after.miss_slots == [[0, 1, 2] + [-1] * 2045]
+    assert after.slot_to_token == [[3, 1, 2, -1]]
+    assert after.lru_slots == [[3, 0, 1, 2]]
 
 
 def test_suffix_invalidation_preserves_eviction_and_hit_order() -> None:

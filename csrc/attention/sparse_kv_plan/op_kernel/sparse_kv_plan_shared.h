@@ -327,16 +327,19 @@ __simt_callee__ __aicore__ inline void ProcessRuntimeRow(
   }
   asc_syncthreads();
 
-  // 阶段 6：按 TopK 原顺序压缩 miss 位置。跨 tile 的 carry 累加到 localMissCount。
+  // 阶段 6：仅首次出现的位置可成为 miss，按 TopK 原顺序压缩并跨 tile 累加。
   int32_t localMissCount = 0;
   for (uint32_t tile = 0U; tile < topk; tile += PLAN_THREADS) {
     const uint32_t position = tile + thread;
     int32_t missFlag = 0;
     if (position < topk) {
       const int32_t token = topkIndices[position];
-      missFlag = IsSourceTokenValid(row, token, visibleSeqLens, tokenToReq, blockTable, maxToken, maxRequests,
-                                    maxNumBlocks, hostNumBlocks, blockSize) &&
-                 currentSlots[topkBase + position] < 0;
+      if (IsSourceTokenValid(row, token, visibleSeqLens, tokenToReq, blockTable, maxToken, maxRequests, maxNumBlocks,
+                             hostNumBlocks, blockSize) &&
+          currentSlots[topkBase + position] < 0) {
+        const uint32_t bucket = LookupTopkToken(hashKeys, token, hashCapacity);
+        missFlag = bucket != HASH_BUCKET_INVALID && hashFirstPos[bucket] == static_cast<int32_t>(position);
+      }
     }
     const int32_t rank = BlockExclusiveScan(scanWorkspace, missFlag, thread);
     const int32_t tileMissCount = control[CONTROL_TOTAL];

@@ -26,6 +26,7 @@ SCORES_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_s
 IMPORT_TEST = Path("tests/ut/device/test_device_op_import.py")
 RUNNER_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_runner.py")
 WORKSPACE_TEST = Path("tests/ut/kv_offload/test_sparse_kv_workspace.py")
+MISS_SELECTION_TEST = Path("tests/ut/kv_offload/test_sparse_kv_plan_miss_selection.py")
 RUNTIME_TEST = Path("tests/ut/kv_offload/test_sparse_kv_indexer_fusion.py")
 STATIC_TESTS = (
     CPU_TEST,
@@ -37,6 +38,7 @@ STATIC_TESTS = (
     IMPORT_TEST,
     RUNNER_TEST,
     WORKSPACE_TEST,
+    MISS_SELECTION_TEST,
 )
 BENCHMARK_STATIC_TESTS = (
     Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark.py"),

@@ -93,11 +93,7 @@ def sparse_kv_plan_reference(inputs: PlanInputs, before: PlanState) -> PlanState
         for token, slot in owner.items():
             current_slots[row][first_position[token]] = slot
 
-        misses = [
-            position
-            for position, token in enumerate(topk_row)
-            if _source_is_valid(inputs, row, token) and current_slots[row][position] < 0
-        ]
+        misses = [position for position in first_position.values() if current_slots[row][position] < 0]
         assign_count = min(len(misses), len(evictable))
         for miss_index in range(assign_count):
             slot = evictable[miss_index]

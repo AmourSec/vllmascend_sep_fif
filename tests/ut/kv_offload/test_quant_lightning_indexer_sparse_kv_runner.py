@@ -63,3 +63,54 @@ def test_runtime_suite_runs_only_runtime_tests(
 
     assert runner.main() == 0
     assert calls == [([runner.RUNTIME_TEST], "runtime", 2, None)]
+
+
+def test_static_and_full_exclude_benchmark_only_cpu_checks(
+    runner: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[list[Path], str, int | None, str | None]] = []
+
+    def record_run(paths: list[Path], name: str, output: Path, device: int | None, marker: str | None = None) -> None:
+        assert output == tmp_path
+        calls.append((paths, name, device, marker))
+
+    # Given benchmark implementation tests are separately named by the runner.
+    # When the default CPU-only static suite runs.
+    monkeypatch.setattr(sys, "argv", [str(RUNNER_PATH), "--suite", "static", "--output", str(tmp_path)])
+    monkeypatch.setattr(runner, "run_pytest", record_run)
+
+    # Then it runs exactly the correctness checks and excludes benchmark checks.
+    assert runner.main() == 0
+    assert calls == [(list(runner.STATIC_TESTS), "static", None, None)]
+    assert runner.BENCHMARK_STATIC_TESTS
+    assert not set(runner.STATIC_TESTS).intersection(runner.BENCHMARK_STATIC_TESTS)
+
+
+def test_static_includes_dependency_isolated_workspace_regression(runner: ModuleType) -> None:
+    # Given the constructor regression needs no NPU runtime.
+    # When the runner defines its CPU correctness suite.
+    # Then the regression is reachable from the default static route.
+    assert runner.WORKSPACE_TEST in runner.STATIC_TESTS
+
+
+def test_benchmark_static_runs_only_benchmark_cpu_checks(
+    runner: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[list[Path], str, int | None, str | None]] = []
+
+    def record_run(paths: list[Path], name: str, output: Path, device: int | None, marker: str | None = None) -> None:
+        assert output == tmp_path
+        calls.append((paths, name, device, marker))
+
+    # Given benchmark implementation checks are separated from correctness checks.
+    # When their explicit CPU-only suite runs.
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(RUNNER_PATH), "--suite", "benchmark-static", "--output", str(tmp_path)],
+    )
+    monkeypatch.setattr(runner, "run_pytest", record_run)
+
+    # Then it runs exactly the benchmark checks without NPU preflight.
+    assert runner.main() == 0
+    assert calls == [(list(runner.BENCHMARK_STATIC_TESTS), "benchmark-static", None, None)]

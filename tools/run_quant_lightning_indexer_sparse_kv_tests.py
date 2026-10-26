@@ -25,6 +25,7 @@ HELPERS_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_
 SCORES_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_scores.py")
 IMPORT_TEST = Path("tests/ut/device/test_device_op_import.py")
 RUNNER_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_runner.py")
+WORKSPACE_TEST = Path("tests/ut/kv_offload/test_sparse_kv_workspace.py")
 RUNTIME_TEST = Path("tests/ut/kv_offload/test_sparse_kv_indexer_fusion.py")
 STATIC_TESTS = (
     CPU_TEST,
@@ -35,6 +36,9 @@ STATIC_TESTS = (
     SCORES_TEST,
     IMPORT_TEST,
     RUNNER_TEST,
+    WORKSPACE_TEST,
+)
+BENCHMARK_STATIC_TESTS = (
     Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark.py"),
     Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark_cli.py"),
     Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark_device.py"),
@@ -49,9 +53,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("static", "smoke", "inline", "runtime", "full", "stress", "profile", "benchmark"),
+        choices=(
+            "static",
+            "benchmark-static",
+            "smoke",
+            "inline",
+            "runtime",
+            "full",
+            "stress",
+            "profile",
+            "benchmark",
+        ),
         default="smoke",
-        help="static runs CPU checks; inline tests UB handoff; runtime runs Python fusion integration only",
+        help=(
+            "static runs CPU correctness checks; benchmark-static runs CPU benchmark checks; "
+            "inline tests UB handoff; runtime runs Python fusion integration only"
+        ),
     )
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
@@ -211,6 +228,10 @@ def main() -> int:
         if args.suite == "static":
             run_pytest(list(STATIC_TESTS), "static", output, None)
             print(f"Completed static; results: {output}")
+            return 0
+        if args.suite == "benchmark-static":
+            run_pytest(list(BENCHMARK_STATIC_TESTS), "benchmark-static", output, None)
+            print(f"Completed benchmark-static; results: {output}")
             return 0
         metadata = preflight(args.device, args.cann_root)
         (output / "environment.json").write_text(json.dumps(metadata, indent=2) + "\n")

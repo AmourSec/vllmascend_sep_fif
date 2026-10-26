@@ -38,6 +38,7 @@ def _assert_fused_differential(
     *,
     capacity: int = TOPK,
     disjoint_permuted_blocks: bool = False,
+    planner_extra_blocks: int = 0,
 ) -> None:
     case = make_case(
         seq_lens,
@@ -45,8 +46,14 @@ def _assert_fused_differential(
         capacity=capacity,
         disjoint_permuted_blocks=disjoint_permuted_blocks,
     )
+    if planner_extra_blocks:
+        padding = case.kv_block_table.new_full((len(seq_lens), planner_extra_blocks), -1)
+        case = replace(case, kv_block_table=torch.cat((case.kv_block_table, padding), dim=1))
     before = make_state(case)
     fused_state = before.clone()
+    if before.compact_workspace.shape[1] * before.compact_workspace.element_size() <= 112 * 1024:
+        # Exercise the runtime's minimal UB placeholder against the legacy full-workspace baseline.
+        fused_state = replace(fused_state, compact_workspace=before.compact_workspace.new_empty((1, 1)))
     baseline_state = before.clone()
 
     fused_indices = run_fused(case, fused_state)
@@ -94,6 +101,16 @@ def test_multi_request_mtp_uses_disjoint_permuted_physical_keys() -> None:
         [TOPK + 129, TOPK + 257, TOPK + 385, TOPK + 513],
         [1, 2, 4, 6],
         disjoint_permuted_blocks=True,
+    )
+
+
+def test_planner_and_indexer_block_tables_can_have_different_widths() -> None:
+    # Distinct requests expose an incorrect planner row stride when its table is wider.
+    _assert_fused_differential(
+        [TOPK + 129, TOPK + 257],
+        [1, 2],
+        disjoint_permuted_blocks=True,
+        planner_extra_blocks=3,
     )
 
 

@@ -10,6 +10,8 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_indexer imp
 )
 
 _MIN_HASH_CAPACITY = 32
+_INT32_BYTES = 4
+_PLAN_ROW_UB_LIMIT_BYTES = 112 * 1024
 
 
 def sparse_kv_plan_hash_capacity(topk: int) -> int:
@@ -76,7 +78,10 @@ class SparseKVSimtLru:
         self.plan_owner_layer_id: int | None = None
 
         row_elements = sparse_kv_plan_workspace_elements(topk, capacity)
-        self.compact_workspace = torch.empty((max_rows, row_elements), dtype=torch.int32, device=device)
+        workspace_shape = (
+            (1, 1) if row_elements * _INT32_BYTES <= _PLAN_ROW_UB_LIMIT_BYTES else (max_rows, row_elements)
+        )
+        self.compact_workspace = torch.empty(workspace_shape, dtype=torch.int32, device=device)
         initial_lru = torch.arange(capacity, dtype=torch.int32, device=device).view(1, capacity)
         self.layers = [
             _SparseKVSimtLayerState(

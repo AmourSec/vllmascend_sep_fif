@@ -18,7 +18,6 @@
 #include "kernel_operator.h"
 #include "../../../../lightning_indexer/op_kernel/lightning_indexer_common.h"
 #include "../../../../lightning_indexer_v2/op_kernel/arch35/common/vf/lightning_indexer_v2_topk_base.h"
-#include "../../../../lightning_indexer/op_kernel/arch35/vf/vf_topk_gather.h"
 #include "../../../../lightning_indexer/op_kernel/arch35/vf/common/vf_topk_16_gather.h"
 
 namespace topk {
@@ -29,87 +28,6 @@ public:
                                       uint32_t s2SeqLen)
     {}
 };
-template <>
-class LITopk<uint32_t> {
-public:
-    __aicore__ inline uint32_t GetSharedTmpBufferSize()
-    {
-        return liV2TopkCommon::GetGatherTmpBufferSize<uint32_t, liV2TopkCommon::B32_RADIX_BUFFER_NUM>(qliTopKCount,
-                                                                                                      qliTrunkLength);
-    }
-
-    __aicore__ inline void Init(uint32_t qliTopKCount, uint32_t qliTrunkLength)
-    {
-        this->qliTopKCount = qliTopKCount;
-        this->qliTrunkLength = qliTrunkLength;
-    }
-
-    __aicore__ inline void InitBuffers(LocalTensor<uint32_t>& qliSharedBuffer, LocalTensor<uint32_t>& qliIndicesOut)
-    {
-        LocalTensor<uint32_t> hisIndex1 = qliIndicesOut;
-        LocalTensor<uint32_t> hisIndex2 = qliSharedBuffer[0];
-        hisIndexLocal[0] = hisIndex1;
-        hisIndexLocal[1] = hisIndex2;
-        histogramsLocal = hisIndex2[QLICommon::Align(qliTopKCount, (uint32_t)256)]; // 256:topk对齐256
-        idxLocal0 = histogramsLocal[256];                                           // 256: 本地内存对齐基线
-        idxLocal1 = idxLocal0[256];                                                 // 256: 同上
-        idxLocal2 = idxLocal1[256];                                                 // 256: 同上
-        idxLocal3 = idxLocal2[256];                                                 // 256: 同上
-        nkValueLocal = idxLocal3[256];                                              // 256: 同上
-        tmpIndexLocal = nkValueLocal[64]; // 64: 单核/单线程输出元素容量（G维度切分阈值）
-    }
-
-    __aicore__ inline void operator()(LocalTensor<uint32_t>& mrgValueLocal, LocalTensor<uint32_t>& qliIndicesOut,
-                                      LocalTensor<uint32_t>& hisValueLocal, uint32_t s2SeqLen, uint32_t loopIdx,
-                                      uint32_t s2LoopNum)
-    {
-        if (s2LoopNum == 1) {
-            topkb32gather::LiTopKVF<false>(tmpIndexLocal, hisValueLocal, mrgValueLocal, histogramsLocal, idxLocal0,
-                                           idxLocal1, idxLocal2, idxLocal3, nkValueLocal, qliTopKCount, s2SeqLen);
-            PipeBarrier<PIPE_V>();
-            AscendC::DataCopy(qliIndicesOut, tmpIndexLocal,
-                              QLICommon::Align(qliTopKCount, (uint32_t)256)); // 256:topk对齐256
-        } else {
-            if (loopIdx == 0) {
-                topkb32gather::LiTopKVF<true>(tmpIndexLocal, hisValueLocal, mrgValueLocal, histogramsLocal, idxLocal0,
-                                              idxLocal1, idxLocal2, idxLocal3, nkValueLocal, qliTopKCount, s2SeqLen);
-                PipeBarrier<PIPE_V>();
-                AscendC::DataCopy(hisIndexLocal[(loopIdx + 1) % 2],                              // 2:pingpong
-                                  tmpIndexLocal, QLICommon::Align(qliTopKCount, (uint32_t)256)); // 256:topk对齐256
-            } else {
-                topkb32gather::LiTopKVF<true>(tmpIndexLocal, hisValueLocal, mrgValueLocal, histogramsLocal, idxLocal0,
-                                              idxLocal1, idxLocal2, idxLocal3, nkValueLocal, qliTopKCount, s2SeqLen);
-                PipeBarrier<PIPE_V>();
-                topkb32gather::LiTopKGatherVF(
-                    hisIndexLocal[(loopIdx + 1) % 2], hisValueLocal, mrgValueLocal, // 2:pingpong
-                    tmpIndexLocal, hisIndexLocal[loopIdx % 2],                      // 2:pingpong
-                    qliTopKCount,
-                    loopIdx * qliTrunkLength - QLICommon::Align(qliTopKCount, (uint32_t)256), // 256:topk对齐256
-                    s2SeqLen);
-                if (loopIdx == s2LoopNum - 1) {
-                    PipeBarrier<PIPE_V>();
-                    if ((loopIdx + 1) % 2 == 1) {                                          // 2:pingpong
-                        AscendC::DataCopy(qliIndicesOut, hisIndexLocal[(loopIdx + 1) % 2], // 2:pingpong
-                                          QLICommon::Align(qliTopKCount, (uint32_t)256));  // 256:topk对齐256
-                    }
-                }
-            }
-        }
-    }
-
-private:
-    LocalTensor<uint32_t> hisIndexLocal[2]; // 每trunkLen长度的s2选出的topK个索引
-    LocalTensor<uint32_t> histogramsLocal;  // 直方图的临时Buf 256 * 4B
-    LocalTensor<uint32_t> idxLocal0;        // 输入数据第1个8位Buf 256 * 4B
-    LocalTensor<uint32_t> idxLocal1;        // 输入数据第2个8位Buf 256 * 4B
-    LocalTensor<uint32_t> idxLocal2;        // 输入数据第3个8位Buf 256 * 4B
-    LocalTensor<uint32_t> idxLocal3;        // 输入数据第4个8位Buf 256 * 4B
-    LocalTensor<uint32_t> nkValueLocal;     // next_k 暂存Buf 64 * 4B
-    LocalTensor<uint32_t> tmpIndexLocal;    // 每trunkLen + topK的临时index
-    uint32_t qliTopKCount = 512U;
-    uint32_t qliTrunkLength = 8192;
-};
-
 template <>
 class LITopk<uint16_t> {
 public:

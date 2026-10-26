@@ -12,6 +12,7 @@ ARCH = VECTOR.with_name("quant_lightning_indexer_kernel_arch35.h")
 TILING = (
     ROOT / "csrc/attention/quant_lightning_indexer_sparse_kv/op_host" / "quant_lightning_indexer_sparse_kv_tiling.cpp"
 )
+TILING_CONTRACT = TILING.with_suffix(".h")
 PLAN_CONFIG = ROOT / "csrc/attention/sparse_kv_plan/op_kernel/sparse_kv_plan_config.h"
 
 
@@ -67,7 +68,7 @@ def test_invalid_rows_are_partitioned_once_and_plan_before_writeback() -> None:
 
 def test_scan_and_dead_topk_slab_resources_cover_ub_and_gm_scratch() -> None:
     vector = VECTOR.read_text()
-    tiling = TILING.read_text()
+    tiling_contract = TILING_CONTRACT.read_text()
     plan_config = PLAN_CONFIG.read_text()
 
     threads = _constant(plan_config, "PLAN_THREADS")
@@ -75,7 +76,7 @@ def test_scan_and_dead_topk_slab_resources_cover_ub_and_gm_scratch() -> None:
     control_elements = _constant(plan_config, "PLAN_CONTROL_ELEMENTS")
     scan_bytes = ((2 * (threads // warp_size) + control_elements) * 4 + 31) & ~31
     assert scan_bytes == 544
-    assert _constant(tiling, "PLAN_SCAN_UB_BYTES") == scan_bytes
+    assert _constant(tiling_contract, "SCAN_BYTES") == scan_bytes
     assert "InitBuffer(plannerScanBuf_, sparse_kv_plan_cfg::PLAN_SCAN_BYTES)" in vector
     assert "plannerScratchBytes = topkSlabBytes > plannerRowUbBytes_ ? topkSlabBytes : plannerRowUbBytes_" in vector
     assert "reinterpret_cast<__ubuf__ int32_t*>(mrgValueLocal_.GetPhyAddr())" in vector
@@ -85,10 +86,11 @@ def test_scan_and_dead_topk_slab_resources_cover_ub_and_gm_scratch() -> None:
 
 def test_capacity_boundary_and_total_t_resource_counts_match_architecture() -> None:
     tiling = TILING.read_text()
-    scan = _constant(tiling, "PLAN_SCAN_UB_BYTES")
-    slab = _constant(tiling, "QLI_TOPK_SLAB_BYTES")
-    small_t = _constant(tiling, "QLI_UB_SMALL_T_BYTES")
-    large_t = _constant(tiling, "QLI_UB_LARGE_T_BYTES")
+    tiling_contract = TILING_CONTRACT.read_text()
+    scan = _constant(tiling_contract, "SCAN_BYTES")
+    slab = _constant(tiling_contract, "QLI_TOPK_SLAB_BYTES")
+    small_t = _constant(tiling_contract, "QLI_UB_SMALL_T_BYTES")
+    large_t = _constant(tiling_contract, "QLI_UB_LARGE_T_BYTES")
 
     assert slab == 89_344
     expected = {
@@ -106,5 +108,5 @@ def test_capacity_boundary_and_total_t_resource_counts_match_architecture() -> N
 
     assert _workspace_row_bytes(7168) == 112 * 1024
     assert _workspace_row_bytes(7169) > 112 * 1024
-    assert "tilingInfo->tSize > 64U ? QLI_UB_LARGE_T_BYTES : QLI_UB_SMALL_T_BYTES" in tiling
-    assert "plannerRowUbBytes > QLI_TOPK_SLAB_BYTES" in tiling
+    assert "ComputePlannerSizing(info.capacity, info.tSize)" in tiling
+    assert "SetDynUBufSize(info.planner.dynamicUbBytes)" in tiling

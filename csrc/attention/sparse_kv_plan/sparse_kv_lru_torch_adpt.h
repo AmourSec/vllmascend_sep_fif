@@ -9,6 +9,7 @@
 #include "torch_npu/csrc/core/npu/NPUGuard.h"
 
 #include "../../aclnn_torch_adapter/op_api_common.h"
+#include "sparse_kv_plan_validation.h"
 
 namespace vllm_ascend {
 namespace {
@@ -32,6 +33,10 @@ inline void npu_sparse_kv_plan(const at::Tensor& reqIds, const at::Tensor& topkI
                                const at::Tensor& missTokens, const at::Tensor& missSlots,
                                const at::Tensor& compactWorkspace, int64_t topk, int64_t capacity, int64_t maxToken,
                                int64_t blockSize, int64_t hostNumBlocks) {
+  sparse_kv_plan_detail::ValidatePlanInputs(reqIds, topkIndices, stablePrefixLens, visibleSeqLens, tokenToReq,
+                                            blockTable, activeRows, lastReqIds, slotToToken, lruSlots, currentSlots,
+                                            missCount, missTokens, missSlots, compactWorkspace, topk, capacity,
+                                            maxToken, blockSize, hostNumBlocks);
   const c10_npu::OptionalNPUGuard deviceGuard(reqIds.device());
   EXEC_NPU_CMD(aclnnSparseKvPlan, reqIds, topkIndices, stablePrefixLens, visibleSeqLens, tokenToReq, blockTable,
                activeRows, lastReqIds, slotToToken, lruSlots, currentSlots, missCount, missTokens, missSlots,

@@ -123,7 +123,17 @@ def test_simt_fused_plan_uses_full_persistent_workspace_and_original_state():
     assert planner.plan_owner_layer_id == 0
 
 
-def test_simt_constructor_allocates_workspace_for_every_row():
+@pytest.mark.parametrize(
+    ("capacity", "expected_shape"),
+    [
+        (8, (1, 1)),
+        (16384, (3, sparse_kv_plan_workspace_elements(4, 16384))),
+    ],
+)
+def test_simt_constructor_allocates_workspace_only_when_plan_exceeds_ub(
+    capacity: int,
+    expected_shape: tuple[int, int],
+):
     op_namespace = torch.ops._C_ascend
     with (
         patch.object(op_namespace, "npu_sparse_kv_plan_transfer", MagicMock(), create=True),
@@ -133,7 +143,7 @@ def test_simt_constructor_allocates_workspace_for_every_row():
         planner = SparseKVSimtLru(
             max_rows=3,
             topk=4,
-            capacity=8,
+            capacity=capacity,
             max_token=64,
             block_size=16,
             host_num_blocks=32,
@@ -145,7 +155,9 @@ def test_simt_constructor_allocates_workspace_for_every_row():
             device=torch.device("cpu"),
         )
 
-    assert planner.compact_workspace.shape == (3, sparse_kv_plan_workspace_elements(4, 8))
+    assert planner.compact_workspace.shape == expected_shape
+    assert planner.compact_workspace.dtype == torch.int32
+    assert planner.compact_workspace.is_contiguous()
 
 
 def test_indexer_fused_adapter_preserves_padded_query_and_logical_output():

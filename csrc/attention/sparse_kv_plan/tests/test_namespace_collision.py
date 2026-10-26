@@ -9,6 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[4]
 CONFIG = ROOT / "csrc/attention/sparse_kv_plan/op_kernel/sparse_kv_plan_config.h"
+OP_DEFINITION = ROOT / "csrc/attention/sparse_kv_plan/op_host/sparse_kv_plan_def.cpp"
 CONSUMERS = (
     ROOT / "csrc/attention/sparse_kv_plan/op_kernel/sparse_kv_plan_shared.h",
     ROOT / "csrc/attention/sparse_kv_plan/op_host/sparse_kv_plan_tiling.cpp",
@@ -57,3 +58,20 @@ def test_generated_tiling_key_macro_does_not_capture_config_namespace(
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_mutable_plan_inputs_preserve_original_strides_for_validation() -> None:
+    source = OP_DEFINITION.read_text()
+    mutable_inputs = set(re.findall(r'AddMutableInt(?:32|64)Input\(\*this, "([^"]+)"\)', source))
+
+    assert mutable_inputs == {
+        "lastReqIds",
+        "slotToToken",
+        "lruSlots",
+        "currentSlots",
+        "missCount",
+        "missTokens",
+        "missSlots",
+        "compactWorkspace",
+    }
+    assert source.count(".IgnoreContiguous();") == 2

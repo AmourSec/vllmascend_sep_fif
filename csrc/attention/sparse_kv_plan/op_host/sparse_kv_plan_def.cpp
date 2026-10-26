@@ -24,6 +24,24 @@ void AddInt64Input(OpDef& op, const char* name) {
       .UnknownShapeFormat({ge::FORMAT_ND})
       .AutoContiguous();
 }
+
+void AddMutableInt32Input(OpDef& op, const char* name) {
+  op.Input(name)
+      .ParamType(REQUIRED)
+      .DataType({ge::DT_INT32})
+      .Format({ge::FORMAT_ND})
+      .UnknownShapeFormat({ge::FORMAT_ND})
+      .IgnoreContiguous();
+}
+
+void AddMutableInt64Input(OpDef& op, const char* name) {
+  op.Input(name)
+      .ParamType(REQUIRED)
+      .DataType({ge::DT_INT64})
+      .Format({ge::FORMAT_ND})
+      .UnknownShapeFormat({ge::FORMAT_ND})
+      .IgnoreContiguous();
+}
 }  // namespace
 
 class SparseKvPlan : public OpDef {
@@ -36,14 +54,14 @@ class SparseKvPlan : public OpDef {
     AddInt32Input(*this, "tokenToReq");
     AddInt32Input(*this, "blockTable");
     AddInt32Input(*this, "activeRows");
-    AddInt64Input(*this, "lastReqIds");
-    AddInt32Input(*this, "slotToToken");
-    AddInt32Input(*this, "lruSlots");
-    AddInt32Input(*this, "currentSlots");
-    AddInt32Input(*this, "missCount");
-    AddInt32Input(*this, "missTokens");
-    AddInt32Input(*this, "missSlots");
-    AddInt32Input(*this, "compactWorkspace");
+    AddMutableInt64Input(*this, "lastReqIds");
+    AddMutableInt32Input(*this, "slotToToken");
+    AddMutableInt32Input(*this, "lruSlots");
+    AddMutableInt32Input(*this, "currentSlots");
+    AddMutableInt32Input(*this, "missCount");
+    AddMutableInt32Input(*this, "missTokens");
+    AddMutableInt32Input(*this, "missSlots");
+    AddMutableInt32Input(*this, "compactWorkspace");
 
     this->Attr("topk").AttrType(REQUIRED).Int();
     this->Attr("capacity").AttrType(REQUIRED).Int();

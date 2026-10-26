@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -34,14 +35,21 @@ STATIC_TESTS = (
     SCORES_TEST,
     IMPORT_TEST,
     RUNNER_TEST,
+    Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark.py"),
+    Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark_cli.py"),
+    Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark_device.py"),
 )
 
 
 def parse_args() -> argparse.Namespace:
+    from tests.e2e.nightly.single_node.ops.singlecard_ops.quant_lightning_indexer_sparse_kv.benchmark import (
+        add_arguments,
+    )
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("static", "smoke", "inline", "runtime", "full", "stress", "profile"),
+        choices=("static", "smoke", "inline", "runtime", "full", "stress", "profile", "benchmark"),
         default="smoke",
         help="static runs CPU checks; inline tests UB handoff; runtime runs Python fusion integration only",
     )
@@ -55,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch", type=int, default=1, help="Profile only: request batch size")
     parser.add_argument("--seq-len", type=int, default=140_000, help="Profile only: context length")
     parser.add_argument("--mtp", type=int, default=1, help="Profile only: query rows per request")
-    parser.add_argument("--iterations", type=int, default=20, help="Profile only: timed iterations")
+    parser.add_argument("--iterations", type=int, default=20, help="Performance: timed calls per route per round")
     parser.add_argument(
         "--capacity",
         type=int,
@@ -64,6 +72,7 @@ def parse_args() -> argparse.Namespace:
         help="Profile only: resident planner capacity",
     )
     parser.add_argument("--trace", action="store_true", help="Profile only: also export separate NPU traces")
+    add_arguments(parser)
     return parser.parse_args()
 
 
@@ -113,8 +122,17 @@ def preflight(device: int, cann_root: Path) -> dict[str, object]:
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True, capture_output=True, check=True
     ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=REPO_ROOT, text=True, capture_output=True, check=True
+    ).stdout
+    diff = subprocess.run(
+        ["git", "diff", "--binary", "HEAD", "--"], cwd=REPO_ROOT, capture_output=True, check=True
+    ).stdout
     return {
         "git_head": head,
+        "git_dirty": bool(status),
+        "git_status": status,
+        "git_tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
         "python": sys.version,
         "torch": torch.__version__,
         "torch_npu": torch_npu.__version__,
@@ -182,6 +200,14 @@ def main() -> int:
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     try:
+        if args.suite == "benchmark":
+            from tests.e2e.nightly.single_node.ops.singlecard_ops.quant_lightning_indexer_sparse_kv.benchmark import (
+                run_benchmark,
+            )
+
+            return run_benchmark(args)
+        if args.dry_run:
+            raise RuntimeError("--dry-run requires --suite benchmark")
         if args.suite == "static":
             run_pytest(list(STATIC_TESTS), "static", output, None)
             print(f"Completed static; results: {output}")
@@ -206,6 +232,14 @@ def main() -> int:
                     str(args.iterations),
                     "--capacity",
                     str(args.capacity),
+                    "--warmup",
+                    str(args.warmup),
+                    "--rounds",
+                    str(args.rounds),
+                    "--seed",
+                    str(args.seed),
+                    "--execution",
+                    args.execution,
                 ]
                 + (["--trace"] if args.trace else []),
                 output / "profile.log",

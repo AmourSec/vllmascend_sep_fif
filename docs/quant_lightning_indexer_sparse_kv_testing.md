@@ -3,6 +3,10 @@
 目标环境为 Ascend 950 系列、CANN 9.1.0，以及当前 `clean_simt` 已能运行的
 vLLM / torch / torch_npu 环境。本次开发环境为 macOS，未执行 CANN 编译或 NPU 测试。
 
+最新进度（2026-10-26）：用户已在 950 上确认正确性全部通过，现进入性能对比阶段。
+以下保留此前各轮验证与修复记录；新增性能脚本说明见
+[性能对比](quant_lightning_indexer_sparse_kv_performance.md)。
+
 ## 实现范围
 
 新算子为 `torch.ops._C_ascend.npu_quant_lightning_indexer_sparse_kv`。
@@ -115,7 +119,11 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py \
 不从 torch_npu 版本号推断 CANN 版本。安装信息路径依据
 [CANN 9.1.0 安装指南](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/910/softwareinst/instg/instg_0054.html)。
 
-profile 输出为已预热 planner 状态下的算子级时间，范围仅为 QLI + Plan，
+完整性能矩阵与执行说明见 [性能对比脚本](quant_lightning_indexer_sparse_kv_performance.md)。
+新增 `--suite benchmark` 覆盖 batch 每个整数 1～32、多种长度、MTP 和 cold/warm planner 状态，
+输出 CSV/JSON 的耗时与加速比；可用 `--execution graph` 测图回放。
+
+profile 使用相同的性能计时实现，输出为已预热 planner 状态下的算子级时间，范围仅为 QLI + Plan，
 不包含 DDR Transfer 或整模型 attention 延迟。检查 trace 中融合路径是否为一个
 `QuantLightningIndexerSparseKv` mixed kernel、基线是否为 QLI 与 SparseKvPlan 两个 kernel。
 对比应使用相同设备、输入、capacity 和执行模式。本次 macOS 开发未测得性能结果。

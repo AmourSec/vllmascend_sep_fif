@@ -115,6 +115,30 @@ void device_print_tensor_meta(const at::Tensor& tensor)
 }
 
 #ifdef VLLM_ASCEND_ENABLE_SPARSE_KV_OFFLOAD
+at::Tensor npu_quant_lightning_indexer_sparse_kv_meta(
+    const at::Tensor &query, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, int64_t, int64_t, int64_t, int64_t)
+{
+    c10::SymDimVector outputShape = {query.sym_size(0), c10::SymInt(1), c10::SymInt(2048)};
+    return at::empty_symint(outputShape, query.options().dtype(at::kInt));
+}
+
+void npu_sparse_kv_plan_meta(
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    const at::Tensor &, const at::Tensor &, const at::Tensor &,
+    int64_t, int64_t, int64_t, int64_t, int64_t)
+{
+}
+
 void npu_sparse_kv_plan_transfer_meta(
     const at::Tensor &, const at::Tensor &, const at::Tensor &,
     const at::Tensor &, const at::Tensor &, const at::Tensor &,
@@ -2212,6 +2236,10 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_sparse_attention_score", &vllm_ascend::meta::npu_sparse_attention_score_meta);
     ops.impl("npu_k2q_csr", &vllm_ascend::meta::npu_k2q_csr_meta);
 #ifdef VLLM_ASCEND_ENABLE_SPARSE_KV_OFFLOAD
+    ops.impl("npu_quant_lightning_indexer_sparse_kv",
+             &vllm_ascend::meta::npu_quant_lightning_indexer_sparse_kv_meta);
+    ops.impl("npu_sparse_kv_plan",
+             &vllm_ascend::meta::npu_sparse_kv_plan_meta);
     ops.impl("npu_sparse_kv_plan_transfer",
              &vllm_ascend::meta::npu_sparse_kv_plan_transfer_meta);
     ops.impl("npu_sparse_kv_transfer",

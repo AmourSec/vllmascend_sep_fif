@@ -31,6 +31,9 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.utils import CpuGpuBuffer
 
 from vllm_ascend.ascend_config import SparseKVOffloadConfig, get_ascend_config
+from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_indexer import (
+    SparseKVIndexerPlanContext,
+)
 from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_simt_lru import SparseKVSimtLru
 from vllm_ascend.utils import AscendDeviceType, bootstrap_custom_op_env, enable_custom_op, get_ascend_device_type
 
@@ -83,6 +86,7 @@ _SPARSE_KV_OFFLOAD_OP_NAMES = (
     "sparse_kv_restore_int16_tensor",
     "npu_sparse_kv_plan_transfer",
     "npu_sparse_kv_transfer",
+    "npu_quant_lightning_indexer_sparse_kv",
 )
 
 
@@ -1362,6 +1366,58 @@ class SparseKVOffloadManager:
             token_to_req_npu,
             capturing,
             skip_topk,
+        )
+
+    def prepare_fused_indexer_plan(
+        self,
+        *,
+        layer_name: str,
+        active_rows: int,
+        num_indexer_tokens: int,
+        req_ids: torch.Tensor,
+        stable_prefix_lens: torch.Tensor,
+        visible_seq_lens: torch.Tensor,
+        token_to_req: torch.Tensor,
+        kv_block_table: torch.Tensor,
+    ) -> SparseKVIndexerPlanContext:
+        layer_id = self._get_offload_layer_id(layer_name)
+        if active_rows > num_indexer_tokens:
+            raise ValueError(
+                "Fused sparse KV active rows exceed padded indexer rows: "
+                f"active_rows={active_rows}, num_indexer_tokens={num_indexer_tokens}"
+            )
+        if num_indexer_tokens > self.simt_lru.max_rows:
+            raise ValueError(
+                "Fused sparse KV padded indexer rows exceed persistent state: "
+                f"num_indexer_tokens={num_indexer_tokens}, max_rows={self.simt_lru.max_rows}"
+            )
+        self.simt_lru.set_active_rows(active_rows)
+        return SparseKVIndexerPlanContext(
+            planner=self.simt_lru,
+            layer_id=layer_id,
+            active_rows=active_rows,
+            num_indexer_tokens=num_indexer_tokens,
+            req_ids=req_ids,
+            stable_prefix_lens=stable_prefix_lens,
+            visible_seq_lens=visible_seq_lens,
+            token_to_req=token_to_req,
+            kv_block_table=kv_block_table,
+        )
+
+    def transfer_prepared_indexer_plan(
+        self,
+        *,
+        layer_name: str,
+        token_to_req: torch.Tensor,
+        block_table: torch.Tensor,
+    ) -> None:
+        layer_id = self._get_offload_layer_id(layer_name)
+        self.simt_lru.transfer_prepared_plan(
+            layer_id=layer_id,
+            token_to_req=token_to_req,
+            block_table=block_table,
+            resident_k=self.topk_buffers_k[layer_id],
+            resident_v=self.topk_buffers_v[layer_id],
         )
 
     def _onload_topk_kv_simt(

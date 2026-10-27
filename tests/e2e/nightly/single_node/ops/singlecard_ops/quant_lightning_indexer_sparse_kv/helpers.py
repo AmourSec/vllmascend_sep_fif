@@ -143,7 +143,7 @@ def make_case(
 def make_state(case: FusedCase, *, extra_rows: int = 0, fill: int = -1) -> PlannerStateTensors:
     rows = case.query.shape[0] + extra_rows
     hash_capacity = 1 << (2 * TOPK - 1).bit_length()
-    workspace_row_elements = 3 * hash_capacity + 2 * case.capacity + TOPK
+    workspace_row_elements = 3 * hash_capacity + case.capacity + TOPK
     return PlannerStateTensors(
         last_req_ids=torch.full((rows,), fill, dtype=torch.int64, device="npu"),
         slot_to_token=torch.full((rows, case.capacity), fill, dtype=torch.int32, device="npu"),

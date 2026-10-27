@@ -73,11 +73,12 @@ def test_long_contexts_match_independent_planner_oracle(seq_len: int) -> None:
 
 @pytest.mark.npu_stress
 @pytest.mark.npu_inline
-def test_batch32_140k_ragged_mtp_stress() -> None:
+@pytest.mark.parametrize("capacity", [8192, 14337])
+def test_batch32_140k_ragged_mtp_stress(capacity: int) -> None:
     # Given: the mandatory maximum batch, 140k context, and ragged 1/2/4/6 MTP spans.
     batch = 32
     spans = [1, 2, 4, 6] * (batch // 4)
-    case = make_case([140_000] * batch, spans, capacity=8192, seed=320_140)
+    case = make_case([140_000] * batch, spans, capacity=capacity, seed=320_140)
     before = make_state(case)
     state = before.clone()
     baseline_state = before.clone()
@@ -88,7 +89,7 @@ def test_batch32_140k_ragged_mtp_stress() -> None:
     run_plan(case, baseline_state, baseline_indices)
     torch_npu.npu.synchronize()
 
-    # Then: long-context selection and the large GM planner branch match both baselines.
+    # Then: long-context selection and both UB/GM planner branches match both baselines.
     assert indices.shape == (sum(spans), TOPK)
     torch.testing.assert_close(indices, baseline_indices, rtol=0, atol=0)
     assert_state_matches(state, oracle_after(case, before, indices))
@@ -183,7 +184,7 @@ def test_active_rows_clamps_to_query_row_bounds(active_rows: int) -> None:
         assert_states_equal(state, before)
 
 
-@pytest.mark.parametrize("capacity", [2048, 4096])
+@pytest.mark.parametrize("capacity", [2048, 4096, 14336, 14337])
 @pytest.mark.npu_inline
 def test_acl_graph_replay_preserves_addresses_and_eager_results(capacity: int) -> None:
     # Given: fixed graph tensors include two active and two padded query rows.

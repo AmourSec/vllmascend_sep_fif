@@ -36,7 +36,7 @@ def _workspace_elements(topk: int, capacity: int) -> int:
     hash_capacity = 32
     while hash_capacity < 2 * topk:
         hash_capacity <<= 1
-    return 3 * hash_capacity + 2 * capacity + topk
+    return 3 * hash_capacity + capacity + topk
 
 
 def _make_case(*, topk: int = 4, capacity: int = 4, rows: int = 1) -> PlanCase:
@@ -105,14 +105,12 @@ def test_plan_supports_capacity_four_with_duplicate_topk() -> None:
     torch.testing.assert_close(case.slot_to_token.cpu(), torch.tensor([[3, 1, 2, -1]], dtype=torch.int32))
     torch.testing.assert_close(case.lru_slots.cpu(), torch.tensor([[3, 0, 1, 2]], dtype=torch.int32))
     torch.testing.assert_close(case.miss_count.cpu(), torch.tensor([3], dtype=torch.int32))
-    torch.testing.assert_close(
-        case.miss_tokens[0, :4].cpu(), torch.tensor([3, 1, 2, -1], dtype=torch.int32)
-    )
+    torch.testing.assert_close(case.miss_tokens[0, :4].cpu(), torch.tensor([3, 1, 2, -1], dtype=torch.int32))
     torch.testing.assert_close(case.miss_slots[0, :4].cpu(), torch.tensor([0, 1, 2, -1], dtype=torch.int32))
 
 
 @pytest.mark.npu_inline
-@pytest.mark.parametrize("capacity", [4, 16384])
+@pytest.mark.parametrize("capacity", [4, 16384, 32768, 32769])
 @pytest.mark.parametrize(
     ("resident", "prefix", "expected_current", "expected_misses"),
     [
@@ -166,9 +164,7 @@ def test_plan_deduplicates_repeated_tokens_in_cold_hit_and_mixed_rows(
         + list(range(miss_start_slot, miss_start_slot + len(expected_misses)))
         + ([0] if resident else [])
     )
-    torch.testing.assert_close(
-        case.lru_slots[0].cpu(), torch.tensor(expected_lru, dtype=torch.int32)
-    )
+    torch.testing.assert_close(case.lru_slots[0].cpu(), torch.tensor(expected_lru, dtype=torch.int32))
     expected_miss_tokens = torch.full((2048,), -1, dtype=torch.int32)
     expected_miss_tokens[: len(expected_misses)] = torch.tensor(expected_misses, dtype=torch.int32)
     expected_miss_slots = torch.full((2048,), -1, dtype=torch.int32)
@@ -181,7 +177,7 @@ def test_plan_deduplicates_repeated_tokens_in_cold_hit_and_mixed_rows(
 
 
 @pytest.mark.npu_inline
-@pytest.mark.parametrize("capacity", [4, 16384])
+@pytest.mark.parametrize("capacity", [4, 16384, 32768, 32769])
 def test_plan_accepts_legacy_flat_workspace_for_ub_and_gm(capacity: int) -> None:
     # Given: the legacy standalone caller supplies a flat UB placeholder or complete GM storage.
     case = _make_case(capacity=capacity)
@@ -211,7 +207,7 @@ def test_plan_accepts_scalar_active_rows() -> None:
 
 
 @pytest.mark.npu_inline
-@pytest.mark.parametrize("capacity", [4, 16384])
+@pytest.mark.parametrize("capacity", [4, 16384, 32768, 32769])
 def test_plan_rejects_short_current_slots_before_mutation(capacity: int) -> None:
     # Given: UB and GM planner cases whose current_slots row cannot hold TopK.
     case = _make_case(capacity=capacity)

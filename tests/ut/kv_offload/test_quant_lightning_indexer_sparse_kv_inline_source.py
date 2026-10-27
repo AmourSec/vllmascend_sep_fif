@@ -25,7 +25,7 @@ def _constant(source: str, name: str) -> int:
 def _workspace_row_bytes(capacity: int) -> int:
     topk = 2048
     hash_capacity = 4096
-    return (3 * hash_capacity + 2 * capacity + topk) * 4
+    return (3 * hash_capacity + capacity + topk) * 4
 
 
 def test_final_topk_ub_is_consumed_inline_without_global_planner_phase() -> None:
@@ -74,8 +74,9 @@ def test_scan_and_dead_topk_slab_resources_cover_ub_and_gm_scratch() -> None:
     threads = _constant(plan_config, "PLAN_THREADS")
     warp_size = _constant(plan_config, "PLAN_WARP_SIZE")
     control_elements = _constant(plan_config, "PLAN_CONTROL_ELEMENTS")
+    assert threads == 1024
     scan_bytes = ((2 * (threads // warp_size) + control_elements) * 4 + 31) & ~31
-    assert scan_bytes == 544
+    assert scan_bytes == 288
     assert _constant(tiling_contract, "SCAN_BYTES") == scan_bytes
     assert "InitBuffer(plannerScanBuf_, sparse_kv_plan_cfg::PLAN_SCAN_BYTES)" in vector
     assert "plannerScratchBytes = topkSlabBytes > plannerRowUbBytes_ ? topkSlabBytes : plannerRowUbBytes_" in vector
@@ -94,11 +95,11 @@ def test_capacity_boundary_and_total_t_resource_counts_match_architecture() -> N
 
     assert slab == 89_344
     expected = {
-        2048: (151_072, 187_424),
-        4096: (151_840, 188_192),
-        7168: (176_416, 212_768),
-        7169: (151_072, 187_424),
-        8192: (151_072, 187_424),
+        2048: (150_816, 187_168),
+        4096: (150_816, 187_168),
+        7168: (150_816, 187_168),
+        14336: (176_160, 212_512),
+        14337: (150_816, 187_168),
     }
     for capacity, totals in expected.items():
         row_bytes = _workspace_row_bytes(capacity)
@@ -106,7 +107,7 @@ def test_capacity_boundary_and_total_t_resource_counts_match_architecture() -> N
         extra = max(planner_ub - slab, 0)
         assert (small_t + scan + extra, large_t + scan + extra) == totals
 
-    assert _workspace_row_bytes(7168) == 112 * 1024
-    assert _workspace_row_bytes(7169) > 112 * 1024
+    assert _workspace_row_bytes(14336) == 112 * 1024
+    assert _workspace_row_bytes(14337) > 112 * 1024
     assert "ComputePlannerSizing(info.capacity, info.tSize)" in tiling
     assert "SetDynUBufSize(info.planner.dynamicUbBytes)" in tiling

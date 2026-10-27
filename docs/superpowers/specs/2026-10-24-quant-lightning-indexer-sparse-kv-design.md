@@ -22,9 +22,12 @@ and tie behavior stay unchanged.
 
 Final merge, score, and temporary storage share a reusable slab after their
 SIMD lifetime ends. Final indices remain in their own UB allocation. Planner
-scan consumes another 544 bytes. Capacity 2048/4096 uses UB scratch; the
-existing 8192 path uses GM scratch. At `T > 64` and capacity 7168, planned
-dynamic UB peaks at 212,768 bytes. CANN compiler resource output for static
+scan consumes another 288 bytes with the SIMTv3 1024-thread planner. Its
+`3H+C+2048` scratch fits in UB through capacity 14336; capacity 14337 and
+larger use GM scratch. At `T > 64` and capacity 14336, planned dynamic UB
+peaks at 212,512 bytes. These resource figures supersede the original design's
+2048-thread planner; see the [current testing guide](../../quant_lightning_indexer_sparse_kv_testing.md).
+CANN compiler resource output for static
 UB, SIMT stack/spill, and DataCache is mandatory; static accounting is not a
 substitute.
 

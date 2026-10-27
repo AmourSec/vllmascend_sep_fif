@@ -16,7 +16,7 @@ namespace optiling::qli_sparse_kv_contract {
 
 constexpr uint32_t TOPK = 2048U;
 constexpr uint64_t HASH_CAPACITY = 4096U;
-constexpr uint32_t SCAN_BYTES = 544U;
+constexpr uint32_t SCAN_BYTES = 288U;
 constexpr uint32_t ROW_UB_LIMIT_BYTES = 112U * 1024U;
 constexpr uint32_t QLI_TOPK_SLAB_BYTES = 89344U;
 constexpr uint32_t QLI_UB_SMALL_T_BYTES = 150528U;
@@ -40,7 +40,7 @@ struct PlannerSizing {
 constexpr uint64_t AlignUp32(uint64_t value) { return (value + 31U) & ~static_cast<uint64_t>(31U); }
 
 constexpr PlannerSizing ComputePlannerSizing(int64_t capacity, uint32_t tokenCount) {
-  const uint64_t rowElements = 3U * HASH_CAPACITY + 2U * static_cast<uint64_t>(capacity) + TOPK;
+  const uint64_t rowElements = 3U * HASH_CAPACITY + static_cast<uint64_t>(capacity) + TOPK;
   const uint64_t alignedRowBytes = AlignUp32(rowElements * sizeof(int32_t));
   const bool usesUb = alignedRowBytes <= ROW_UB_LIMIT_BYTES;
   const uint32_t rowUbBytes = usesUb ? static_cast<uint32_t>(alignedRowBytes) : 0U;

@@ -120,10 +120,10 @@ def test_sequence_boundaries_match_baseline(seq_len: int) -> None:
     _assert_fused_differential([seq_len], [1])
 
 
-@pytest.mark.parametrize("capacity", [2048, 4096, 7168, 7169, 8192])
+@pytest.mark.parametrize("capacity", [2048, 4096, 7168, 7169, 8192, 14336, 14337, 32768, 32769])
 @pytest.mark.npu_inline
 def test_ub_and_gm_workspace_capacity_branches_match_oracle(capacity: int) -> None:
-    # Given/When/Then: planner scratch crosses its UB/GM branch without changing state semantics.
+    # Given/When/Then: planner scratch crosses the 14336 UB/GM and packed-owner 32768 boundaries.
     _assert_fused_differential([TOPK + 257], [2], capacity=capacity)
 
 
@@ -199,3 +199,92 @@ def test_duplicate_semantics_match_oracle_for_standalone_planner() -> None:
 
     # Then: first TopK occurrence and last resident LRU owner match the independent oracle.
     assert_state_matches(state, oracle_after(case, before, indices))
+
+
+@pytest.mark.npu_inline
+@pytest.mark.parametrize("capacity", [16, 14337])
+@pytest.mark.parametrize("warm", [False, True])
+def test_duplicate_topk_tokens_across_simt_tiles_keep_first_position(capacity: int, warm: bool) -> None:
+    # Given: the same token appears at both sides of the 1024-thread tile boundaries.
+    case = make_case([TOPK + 32], [1], capacity=capacity)
+    before = make_state(case)
+    if warm:
+        before.last_req_ids.copy_(case.req_ids)
+        before.slot_to_token[0, 5] = 7
+    indices = torch.full((1, TOPK), -1, dtype=torch.int32, device="npu")
+    positions = [0, 1023, 1024, 2046, 2047]
+    indices[0, positions] = 7
+    indices[0, 3] = 9
+    state = before.clone()
+
+    # When: the standalone SIMTv3 planner compacts misses.
+    run_plan(case, state, indices)
+    torch_npu.npu.synchronize()
+
+    # Then: only first occurrences become current slots/misses, independently verified.
+    assert_state_matches(state, oracle_after(case, before, indices))
+    assert state.miss_count[0].item() == (1 if warm else 2)
+    assert state.current_slots[0, 0].item() >= 0
+    assert state.current_slots[0, 1023].item() == -1
+    assert state.current_slots[0, 1024].item() == -1
+
+
+@pytest.mark.npu_inline
+@pytest.mark.parametrize("capacity", [2048, 14337])
+def test_request_switch_clears_stale_miss_tail_and_preserves_inactive_rows(capacity: int) -> None:
+    # Given: stale miss metadata from the prior request and untouched inactive padding rows.
+    case = make_case([33], [2], capacity=capacity)
+    case.active_rows.fill_(1)
+    before = make_state(case, extra_rows=2, fill=-77)
+    before.miss_count[0] = TOPK
+    before.miss_tokens[0].fill_(12345)
+    before.miss_slots[0].fill_(31)
+    state = before.clone()
+    indices = run_fused(case, state)
+    torch_npu.npu.synchronize()
+
+    # Then: the cold request follows the oracle and padding rows retain every field.
+    assert_state_matches(state, oracle_after(case, before, indices))
+    for actual, original in zip(state.tensors()[:-1], before.tensors()[:-1]):
+        torch.testing.assert_close(actual[1:], original[1:], rtol=0, atol=0)
+
+    # When: the same request is warm and all selected tokens are already resident.
+    case.stable_prefix_lens.copy_(case.visible_seq_lens)
+    warm_before = state.clone()
+    warm_indices = run_fused(case, state)
+    torch_npu.npu.synchronize()
+    assert_state_matches(state, oracle_after(case, warm_before, warm_indices))
+    assert state.miss_count[0].item() == 0
+
+    # When: the request ids switch while the same rows are warm, forcing a cold reset.
+    case.req_ids.add_(10_000)
+    switched_before = state.clone()
+    switched_indices = run_fused(case, state)
+    torch_npu.npu.synchronize()
+
+    # Then: request switching is independently exact and does not leak stale miss tails.
+    assert_state_matches(state, oracle_after(case, switched_before, switched_indices))
+
+
+@pytest.mark.parametrize("capacity", [32768, 32769])
+@pytest.mark.npu_inline
+def test_warm_duplicate_resident_uses_last_lru_owner_at_packed_boundary(capacity: int) -> None:
+    # Given: duplicate resident token 7 is owned by the final, high-numbered LRU slot.
+    case = make_case([33], [1], capacity=capacity)
+    case.stable_prefix_lens.fill_(33)
+    before = make_state(case)
+    before.last_req_ids.fill_(1000)
+    before.slot_to_token[0, 0] = 7
+    before.slot_to_token[0, capacity - 1] = 7
+    before.lru_slots[0] = torch.arange(capacity, dtype=torch.int32, device="npu")
+    indices = torch.full((1, TOPK), -1, dtype=torch.int32, device="npu")
+    indices[0, 0] = 7
+    state = before.clone()
+
+    # When: the warm planner processes the resident duplicate at C=32768/32769.
+    run_plan(case, state, indices)
+    torch_npu.npu.synchronize()
+
+    # Then: owner selection and all state fields match the independent oracle.
+    assert_state_matches(state, oracle_after(case, before, indices))
+    assert state.current_slots[0, 0].item() == capacity - 1

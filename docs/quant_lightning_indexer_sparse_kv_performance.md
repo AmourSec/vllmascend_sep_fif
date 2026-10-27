@@ -7,6 +7,14 @@ comparison includes TopK, planner hit/miss/LRU updates, miss metadata, and
 IndexCache TopK output. It excludes DDR transfer, attention, other model
 layers, and end-to-end throughput.
 
+Both routes now use the same deduplicating SIMTv3 planner (1024 threads,
+`3H+C+TopK` scratch). The baseline is stock QLI followed by this checkout's
+optimized standalone SparseKvPlan, so the speedup measures the remaining
+benefit of inline UB consumption and fusion. It is not a comparison against
+the previous 2048-thread planner. To measure the algorithm change separately,
+compare runs from the previous and current revisions under identical settings;
+keep their recorded Git revisions and rebuild both CANN package and extension.
+
 Rebuild the custom CANN package and PyTorch C++ extension, then complete a
 fresh 950 correctness run before timing. The current checkout has NPU-side
 changes, so earlier benchmark or correctness numbers are not evidence for it.
@@ -45,6 +53,11 @@ python tools/run_quant_lightning_indexer_sparse_kv_tests.py \
   --suite profile --batch 32 --seq-len 140000 --mtp 6 --capacity 4096 \
   --iterations 20 --trace --output test-results/perf-trace
 
+# SIMTv3 UB/GM boundary at 140k, with and without multiple query rows.
+python tools/run_quant_lightning_indexer_sparse_kv_tests.py \
+  --suite benchmark --batches 1,32 --seq-lens 140000 --mtps 1,6 \
+  --capacities 4096,14336,14337,16384 --output test-results/perf-simtv3-boundary
+
 # Validate the benchmark matrix without importing torch or NPU support.
 python tools/run_quant_lightning_indexer_sparse_kv_tests.py \
   --suite benchmark --dry-run --output test-results/perf-plan
@@ -56,6 +69,10 @@ The default benchmark matrix uses batches `1-32`, sequence lengths
 `--batches`, `--seq-lens`, `--mtps`, `--capacities`, `--cache-states`,
 `--warmup`, `--rounds`, and `--iterations` to target a smaller matrix. Inputs
 with batch 32 and MTP 6 have `T=192` query rows.
+Supported capacities are `2048,4096,7168,7169,8192,14336,14337,16384`;
+the old 7168/7169 boundary now uses UB on both sides. Cold cache state includes
+request-reset planning and deduplication; warm state reuses persistent resident
+and LRU metadata. Neither path clears persistent state on every steady-state call.
 
 The benchmark records paired per-call NPU-event times, wall time, medians,
 means, percentiles, confidence summaries, and fused/baseline speedup in CSV and

@@ -39,21 +39,27 @@ template <typename T> inline T asc_atomic_max(T* value, T other) {
 }
 """
     )
-    (include_dir / "simt_api/device_sync_functions.h").write_text(
-        "inline void asc_syncthreads() {}\n"
-    )
+    (include_dir / "simt_api/device_sync_functions.h").write_text("inline void asc_syncthreads() {}\n")
     (include_dir / "simt_api/device_warp_functions.h").write_text("")
 
 
 def _phase6_candidate() -> str:
     # Execute the kernel predicate itself; CPU stubs do not model SIMT synchronization.
     source = SHARED.read_text()
-    phase6 = source[source.index("// 阶段 6：") :]
+    phase6 = source[source.index("int32_t localMissCount = 0;") :]
     body = phase6[phase6.index("    if (position < topk) {") :]
     return body[: body.index("    const int32_t rank = BlockExclusiveScan")]
 
 
+def _cold_miss_candidate() -> str:
+    source = SHARED.read_text()
+    cold = source[source.index("if (control[CONTROL_RESET] != 0) {") :]
+    body = cold[cold.index("      if (position < topk &&") :]
+    return body[: body.index("      const int32_t rank = BlockExclusiveScan")]
+
+
 def _compile_and_run(tmp_path: Path, candidate: str) -> str:
+    cold_candidate = _cold_miss_candidate()
     include_dir = tmp_path / "ascend_stubs"
     _write_ascend_stubs(include_dir)
     source = tmp_path / "duplicate_miss.cpp"
@@ -64,21 +70,21 @@ def _compile_and_run(tmp_path: Path, candidate: str) -> str:
 #include <vector>
 #include \"{SHARED}\"
 
-int EvaluateCandidate(int32_t* topkIndices, int32_t* currentSlots,
-                      [[maybe_unused]] int32_t* hashKeys, [[maybe_unused]] int32_t* hashFirstPos,
-                      int32_t* visibleSeqLens, int32_t* tokenToReq,
-                      int32_t* blockTable, uint32_t position, uint32_t topk) {{
-  const int64_t row = 0;
+int EvaluateCandidate(int32_t* currentSlots, int32_t* hashFirstPos,
+                      int32_t* missPositions, int32_t* hashOwner,
+                      int32_t* lruSlots, uint32_t capacity,
+                      uint32_t position, uint32_t topk) {{
   const int64_t topkBase = 0;
-  const int64_t maxToken = 4096;
-  const int64_t maxRequests = 1;
-  const int64_t maxNumBlocks = 4096;
-  const int64_t hostNumBlocks = 4096;
-  const int32_t blockSize = 1;
-  [[maybe_unused]] const uint32_t hashCapacity = 8192;
+  const int64_t capacityBase = 0;
   int32_t missFlag = 0;
 {candidate}
   return missFlag;
+}}
+
+int EvaluateColdCandidate(int32_t* missPositions, int32_t* hashFirstPos, uint32_t position, uint32_t topk) {{
+  int32_t flag = 0;
+{cold_candidate}
+  return flag;
 }}
 
 int main() {{
@@ -91,36 +97,55 @@ int main() {{
   std::vector<int32_t> visible(1, 4096);
   std::vector<int32_t> requests(1, 0);
   std::vector<int32_t> blocks(4096, 0);
+  std::vector<int32_t> cached(topk, -1);
+  std::vector<int32_t> owners(hashCapacity, -1);
   indices[0] = 3; indices[1] = 3; indices[2] = 1; indices[3] = 2;
-  indices[2047] = 3; indices[2048] = 3; indices[2049] = 4;
+  // Repeated tokens straddle both SIMTv3 tile boundaries (1023/1024, 2047/2048).
+  indices[1023] = 3; indices[1024] = 8; indices[2047] = 8; indices[2048] = 8; indices[2049] = 4;
   indices[2050] = 4; indices[2051] = 5; indices[2052] = 6;
   indices[3000] = 7;
   blocks[7] = -1;
   for (int32_t position = static_cast<int32_t>(topk) - 1; position >= 0; --position) {{
     if (IsSourceTokenValid(0, indices[position], visible.data(), requests.data(), blocks.data(),
                            4096, 1, 4096, 4096, 1)) {{
-      InsertTopkToken(keys.data(), first.data(), indices[position], position, hashCapacity);
+      cached[position] = static_cast<int32_t>(
+          InsertTopkToken(keys.data(), first.data(), indices[position], position, hashCapacity));
     }}
   }}
-  auto evaluate = [&](bool resident) {{
+  const std::vector<uint32_t> expectedCold{{0, 2, 3, 1024, 2049, 2051, 2052}};
+  const std::vector<uint32_t> expectedResident{{2, 3, 1024, 2049, 2051, 2052}};
+  std::vector<uint32_t> coldMisses;
+  for (uint32_t position = 0; position < topk; ++position) {{
+    if (EvaluateColdCandidate(cached.data(), first.data(), position, topk) != 0) coldMisses.push_back(position);
+  }}
+  if (coldMisses != expectedCold) return 1;
+  for (uint32_t position : coldMisses) std::cout << position << " ";
+  std::cout << "\\n";
+  for (uint32_t capacity : {{2048U, 32768U, 32769U}}) {{
+    std::vector<int32_t> lruSlots(capacity, -1);
+    const uint32_t order = capacity - 1U;
+    const uint32_t slot = capacity - 2U;
+    lruSlots[order] = static_cast<int32_t>(slot);
+    owners[cached[0]] = static_cast<int32_t>(capacity <= OWNER_PACK_CAPACITY
+                                              ? (order << OWNER_SLOT_BITS) | slot : order);
     current.assign(topk, -1);
-    if (resident) current[0] = 0;
     std::vector<uint32_t> misses;
     for (uint32_t position = 0; position < topk; ++position) {{
-      if (EvaluateCandidate(indices.data(), current.data(), keys.data(), first.data(), visible.data(), requests.data(),
-                            blocks.data(), position, topk) != 0) {{
+      if (EvaluateCandidate(current.data(), first.data(), cached.data(), owners.data(),
+                            lruSlots.data(), capacity, position, topk) != 0) {{
         misses.push_back(position);
       }}
     }}
-    for (uint32_t position : misses) std::cout << position << " ";
-    std::cout << "\\n";
-    return misses;
-  }};
-  const auto cold = evaluate(false);
-  const auto resident = evaluate(true);
-  const std::vector<uint32_t> expectedCold{{0, 2, 3, 2049, 2051, 2052}};
-  const std::vector<uint32_t> expectedResident{{2, 3, 2049, 2051, 2052}};
-  return cold == expectedCold && resident == expectedResident ? 0 : 1;
+    if (misses != expectedResident || current[0] != static_cast<int32_t>(slot)) return 2;
+    for (uint32_t position = 1; position < topk; ++position) {{
+      if (current[position] != -1) return 3;
+    }}
+    if (capacity == 2048U) {{
+      for (uint32_t position : misses) std::cout << position << " ";
+      std::cout << "\\n";
+    }}
+  }}
+  return 0;
 }}
 """
     )
@@ -155,4 +180,5 @@ int main() {{
 
 def test_phase6_deduplicates_cold_misses_across_topk_tiles(tmp_path: Path) -> None:
     candidate = _phase6_candidate()
-    assert _compile_and_run(tmp_path, candidate) == "0 2 3 2049 2051 2052 \n2 3 2049 2051 2052 \n"
+    # Both cold and warm predicates are compiled from the production kernel; no SIMT emulator is involved.
+    assert _compile_and_run(tmp_path, candidate) == "0 2 3 1024 2049 2051 2052 \n2 3 1024 2049 2051 2052 \n"

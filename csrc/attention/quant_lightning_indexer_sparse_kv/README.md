@@ -18,12 +18,13 @@ the existing index output copy. It also covers masked, zero-length, and
 globally empty rows. Empty rows are assigned to one AIV only. Planner
 `active_rows` is clamped to query `T`, so inactive LRU rows are not modified.
 
-The planner scan uses a dedicated 544-byte UB buffer. Planner row scratch up
+The SIMTv3 planner uses 1024 threads and a dedicated 288-byte scan buffer. Planner row scratch up
 to 112 KiB reuses the dead 89,344-byte TopK slab, growing dynamic UB only by
 the excess over that slab. Larger rows use the required persistent
 `compact_workspace[max_rows, workspace_width]`, where `max_rows >= T`,
-`workspace_width = 3H+2C+2048`, and `H` is the next power of two at least
-`2*2048`. The maximum fused dynamic UB is 212,768 bytes and leaves 41,184
+`workspace_width = 3H+C+2048`, and `H` is the next power of two at least
+`2*2048`. Capacity 14336 is the last UB case; 14337 uses GM scratch.
+The maximum fused dynamic UB is 212,512 bytes and leaves 41,440
 bytes of DataCache under the CANN 9.1.0 mixed SIMD/SIMT cache rule.
 The UB path accepts a contiguous int32 `[1,1]` workspace placeholder; it
 does not allocate or access the per-row GM scratch.
@@ -62,10 +63,16 @@ Vendored inventory:
 - `vendor/lightning_indexer_v2/op_kernel/arch35/common/vf/lightning_indexer_v2_vector1_base.h`
 
 The planner implementation is shared with the standalone `SparseKvPlan`
-operator through
-`csrc/attention/sparse_kv_plan/op_kernel/sparse_kv_plan_shared.h`; the
-standalone operator keeps its prior launch, UB fast path, GM fallback, and LRU
-semantics.
+operator through `csrc/attention/sparse_kv_plan/op_kernel/sparse_kv_plan_shared.h`.
+Both use the SIMTv3 algorithm ported from `7f37e14ca` on
+`chore/simtv3-dependency-audit`: parallel warp-total scan, cached hash buckets,
+one hit/evict partition, packed LRU owner, and tail-only miss-output clearing.
+The first occurrence of a duplicate TopK token owns its hit or miss; later
+occurrences remain unassigned. A request switch still builds the deduplication
+hash, but skips owner initialization and resident classification, then emits
+the rotated identity LRU directly. This intentionally retains the current
+duplicate fix instead of the source branch's independent duplicate misses.
+The dependency branch's CANN/vLLM upgrades are not part of this port.
 
 This checkout does not provide a macOS CANN 9.1 compiler or Ascend 950 device.
 Resource compilation and device accuracy/performance must therefore be

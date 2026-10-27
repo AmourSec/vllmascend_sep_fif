@@ -147,21 +147,26 @@ using namespace optiling::qli_sparse_kv_contract;
 int main() {{
     const PlannerSizing small = ComputePlannerSizing(4096, 64);
     const PlannerSizing large = ComputePlannerSizing(4096, 65);
-    if (small.hashCapacity != 4096 || small.workspaceRowElements != 22528 ||
-        small.planLocalMemoryBytes != 90656 || small.dynamicUbBytes != 151840) {{
+    if (small.hashCapacity != 4096 || small.workspaceRowElements != 18432 ||
+        small.planLocalMemoryBytes != 74016 || small.dynamicUbBytes != 150816) {{
         return 1;
     }}
-    if (large.dynamicUbBytes != 188192) {{
+    if (large.dynamicUbBytes != 187168) {{
         return 2;
     }}
-    const PlannerSizing gm = ComputePlannerSizing(7169, 65);
-    if (gm.planLocalMemoryBytes != 544 || gm.dynamicUbBytes != 187424) {{
+    const PlannerSizing gm = ComputePlannerSizing(14337, 65);
+    if (gm.planLocalMemoryBytes != 288 || gm.dynamicUbBytes != 187168) {{
         return 3;
     }}
+    const PlannerSizing ubBoundary = ComputePlannerSizing(14336, 65);
+    if (ubBoundary.workspaceRowElements != 28672 || ubBoundary.planLocalMemoryBytes != 114976 ||
+        ubBoundary.dynamicUbBytes != 212512) {{
+        return 9;
+    }}
     if (!CompactWorkspaceShapeIsValid(1, 1, small, 64) ||
-        !CompactWorkspaceShapeIsValid(64, 22528, small, 64) ||
+        !CompactWorkspaceShapeIsValid(64, 18432, small, 64) ||
         CompactWorkspaceShapeIsValid(1, 2, small, 64) ||
-        CompactWorkspaceShapeIsValid(63, 22528, small, 64)) {{
+        CompactWorkspaceShapeIsValid(63, 18432, small, 64)) {{
         return 4;
     }}
     if (!CompactWorkspaceShapeIsValid(65, gm.workspaceRowElements, gm, 65) ||

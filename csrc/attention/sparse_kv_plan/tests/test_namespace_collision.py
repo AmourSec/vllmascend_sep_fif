@@ -46,7 +46,7 @@ def test_generated_tiling_key_macro_does_not_capture_config_namespace(
     source.write_text(
         (macro + include if macro_before_include else include + macro)
         + f"{declarations}\n"
-        + f"static_assert(k{threads_index} == 2048U);\n"
+        + f"static_assert(k{threads_index} == 1024U);\n"
         + 'extern "C" void sparse_kv_plan() {}\n'
         + "int main() { sparse_kv_plan(); return 0; }\n",
         encoding="utf-8",

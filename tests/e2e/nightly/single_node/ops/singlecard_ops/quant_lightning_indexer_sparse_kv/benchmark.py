@@ -8,7 +8,7 @@ import sys
 import traceback
 from dataclasses import asdict
 
-from .benchmark_config import TimingConfig, build_cases
+from .benchmark_config import CAPACITIES, TimingConfig, build_cases
 from .benchmark_report import summarize_case, write_results
 
 
@@ -17,7 +17,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--batches", default="1-32", help="Benchmark: request counts, default every integer 1..32")
     group.add_argument("--seq-lens", default="4096,32768,140000", help="Benchmark: context lengths in tokens")
     group.add_argument("--mtps", default="1,2,4,6", help="Benchmark: query rows per request; 1 is normal decode")
-    group.add_argument("--capacities", default="2048", help="Benchmark: 2048,4096,7168,7169,8192")
+    group.add_argument("--capacities", default="2048", help=f"Benchmark: {','.join(map(str, sorted(CAPACITIES)))}")
     group.add_argument("--cache-states", default="warm,cold", help="Benchmark: warm,cold planner residency")
     group.add_argument("--execution", choices=("eager", "graph"), default="eager", help="Performance execution mode")
     group.add_argument("--warmup", type=int, default=10, help="Untimed calls per route and case")

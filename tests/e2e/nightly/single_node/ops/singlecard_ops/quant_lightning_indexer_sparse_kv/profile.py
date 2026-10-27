@@ -8,7 +8,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from .benchmark_config import BenchmarkCase, TimingConfig
+from .benchmark_config import CAPACITIES, BenchmarkCase, TimingConfig
 from .benchmark_report import summarize_case, write_results
 
 
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--execution", choices=("eager", "graph"), default="eager")
-    parser.add_argument("--capacity", type=int, choices=(2048, 4096, 7168, 7169, 8192), default=2048)
+    parser.add_argument("--capacity", type=int, choices=sorted(CAPACITIES), default=2048)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--trace", action="store_true")
     return parser.parse_args()

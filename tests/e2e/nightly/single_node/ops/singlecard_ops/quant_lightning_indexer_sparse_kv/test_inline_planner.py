@@ -47,7 +47,7 @@ def _assert_exact_stock_differential(
 
 @pytest.mark.npu_inline
 @pytest.mark.parametrize("total_rows", [64, 65])
-@pytest.mark.parametrize("capacity", [2048, 7168, 7169])
+@pytest.mark.parametrize("capacity", [2048, 7168, 7169, 14336, 14337])
 def test_inline_row_scheduler_boundary_matches_stock_route(total_rows: int, capacity: int) -> None:
     # Given: total T crosses the scheduler boundary that changes s1Base from two to four rows.
     spans = [2] * 32
@@ -82,7 +82,7 @@ def test_zero_key_requests_match_stock(seq_lens: list[int]) -> None:
 
 @pytest.mark.npu_inline
 @pytest.mark.npu_stress
-@pytest.mark.parametrize("capacity", [2048, 4096])
+@pytest.mark.parametrize("capacity", [2048, 4096, 14337])
 def test_inline_multiple_rows_share_a_long_multitrunk_request(capacity: int) -> None:
     # Given/When/Then: six final TopK rows from one 140k request each consume their own UB indices once.
     _assert_exact_stock_differential([140_000], [6], capacity=capacity, seed=601_400)

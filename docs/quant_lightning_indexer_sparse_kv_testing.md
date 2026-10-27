@@ -24,9 +24,10 @@ run; no earlier NPU result applies to this checkout.
 | MTP and reuse | plan state is per query row; `token_to_req` selects request state. Shared IndexCache layers reuse the prepared plan, while MTP row compaction or a layer without QLI uses standalone planning |
 
 Final TopK merge/score/temporary storage uses a reusable slab; final indices
-remain in a separate UB allocation. The planner adds a 544-byte scan buffer.
-Capacity 2048/4096 uses UB scratch, while 8192 uses the existing GM fallback.
-The highest planned dynamic-UB case is 212,768 bytes (`T > 64`, capacity 7168);
+remain in a separate UB allocation. The 1024-thread SIMTv3 planner adds a
+288-byte scan buffer and uses `(3H+C+2048)*4` bytes of row scratch.
+Capacities through 14336 use UB scratch; 14337 and larger use GM scratch.
+The highest planned dynamic-UB case is 212,512 bytes (`T > 64`, capacity 14336);
 the CANN compiler resource report, including static UB, SIMT stack/spill, and
 DataCache, is the authority for the final budget.
 
@@ -36,7 +37,12 @@ request replacement, speculative rollback, invalid pages, graph padding and
 replay, shape/dtype errors, and unambiguous BF16-rounded TopK boundaries. The
 NPU matrix covers batch 1/2/4/8/16/32, MTP 1/2/4/6 including ragged rows,
 contexts around 2048 and through 143360, query rows around 64/65, and
-capacities 2048/4096/8192 plus the UB/GM-scratch boundary cases.
+capacities 2048/4096/8192 plus the UB/GM-scratch boundary cases 14336/14337.
+SIMTv3 regressions also cover duplicate selections crossing 1024-thread
+tiles, stale miss-output tails, inactive rows, request switches, and capacities
+32768/32769 around the packed-owner limit. The CPU suite compiles the actual
+cold/warm selection predicates and executes the parallel warp-total scan with
+synchronized CPU shuffle stubs; these checks do not model NPU memory ordering.
 
 ## Build on an Ascend 950 host
 

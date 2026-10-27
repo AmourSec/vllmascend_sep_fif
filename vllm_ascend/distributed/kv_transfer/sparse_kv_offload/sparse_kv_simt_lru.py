@@ -25,7 +25,7 @@ def sparse_kv_plan_hash_capacity(topk: int) -> int:
 
 def sparse_kv_plan_workspace_elements(topk: int, capacity: int) -> int:
     hash_capacity = sparse_kv_plan_hash_capacity(topk)
-    return 3 * hash_capacity + 2 * capacity + topk
+    return 3 * hash_capacity + capacity + topk
 
 
 @dataclass

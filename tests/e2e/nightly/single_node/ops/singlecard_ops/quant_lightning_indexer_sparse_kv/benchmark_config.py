@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Final
 
-CAPACITIES: Final = frozenset({2048, 4096, 7168, 7169, 8192})
+CAPACITIES: Final = frozenset({2048, 4096, 7168, 7169, 8192, 14336, 14337, 16384})
 CACHE_STATES: Final = frozenset({"cold", "warm"})
 EXECUTIONS: Final = frozenset({"eager", "graph"})
 MAX_EXPANDED_VALUES: Final = 4096

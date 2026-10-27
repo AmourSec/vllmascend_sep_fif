@@ -41,11 +41,11 @@ def _load_simt_module(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
 @pytest.mark.parametrize(
     ("capacity", "row_elements", "expected_shape"),
     [
-        (2048, 18432, (1, 1)),
-        (4096, 22528, (1, 1)),
-        (7168, 28672, (1, 1)),
-        (7169, 28674, (192, 28674)),
-        (8192, 30720, (192, 30720)),
+        (2048, 16384, (1, 1)),
+        (4096, 18432, (1, 1)),
+        (7168, 21504, (1, 1)),
+        (14336, 28672, (1, 1)),
+        (14337, 28673, (192, 28673)),
     ],
 )
 def test_constructor_allocates_workspace_only_for_gm_rows(

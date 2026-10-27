@@ -143,7 +143,7 @@ static ge::graphStatus SparseKvPlanTiling(gert::TilingContext* context) {
   }
 
   const uint64_t hashCapacity = HashCapacity(topk);
-  const uint64_t rowElements = 3U * hashCapacity + 2U * static_cast<uint64_t>(capacity) + static_cast<uint64_t>(topk);
+  const uint64_t rowElements = 3U * hashCapacity + static_cast<uint64_t>(capacity) + static_cast<uint64_t>(topk);
   if (static_cast<uint64_t>(maxRows) > std::numeric_limits<uint64_t>::max() / rowElements) {
     return Fail(context, "SparseKvPlan workspace size overflow");
   }

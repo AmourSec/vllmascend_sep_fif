@@ -27,6 +27,7 @@ IMPORT_TEST = Path("tests/ut/device/test_device_op_import.py")
 RUNNER_TEST = Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_runner.py")
 WORKSPACE_TEST = Path("tests/ut/kv_offload/test_sparse_kv_workspace.py")
 MISS_SELECTION_TEST = Path("tests/ut/kv_offload/test_sparse_kv_plan_miss_selection.py")
+SCAN_TEST = Path("tests/ut/kv_offload/test_sparse_kv_plan_scan.py")
 RUNTIME_TEST = Path("tests/ut/kv_offload/test_sparse_kv_indexer_fusion.py")
 STATIC_TESTS = (
     CPU_TEST,
@@ -39,6 +40,7 @@ STATIC_TESTS = (
     RUNNER_TEST,
     WORKSPACE_TEST,
     MISS_SELECTION_TEST,
+    SCAN_TEST,
 )
 BENCHMARK_STATIC_TESTS = (
     Path("tests/ut/kv_offload/test_quant_lightning_indexer_sparse_kv_benchmark.py"),
@@ -50,6 +52,9 @@ BENCHMARK_STATIC_TESTS = (
 def parse_args() -> argparse.Namespace:
     from tests.e2e.nightly.single_node.ops.singlecard_ops.quant_lightning_indexer_sparse_kv.benchmark import (
         add_arguments,
+    )
+    from tests.e2e.nightly.single_node.ops.singlecard_ops.quant_lightning_indexer_sparse_kv.benchmark_config import (
+        CAPACITIES,
     )
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -86,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--capacity",
         type=int,
-        choices=(2048, 4096, 8192),
+        choices=sorted(CAPACITIES),
         default=2048,
         help="Profile only: resident planner capacity",
     )

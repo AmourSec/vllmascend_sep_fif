@@ -120,7 +120,7 @@ inline void ValidatePlanStateInputs(const at::Tensor& reqIds, const at::Tensor& 
   TORCH_CHECK(currentSlots.size(1) == topk && missTokens.size(1) == topk && missSlots.size(1) == topk,
               "current_slots, miss_tokens, and miss_slots width must equal topk");
 
-  const int64_t rowElements = 3 * PlanHashCapacity(topk) + 2 * capacity + topk;
+  const int64_t rowElements = 3 * PlanHashCapacity(topk) + capacity + topk;
   TORCH_CHECK(rows <= std::numeric_limits<int64_t>::max() / rowElements,
               "compact_workspace required size exceeds int64 limits");
   CheckPlanWorkspace(compactWorkspace, rows, rowElements, device);

@@ -50,7 +50,7 @@ def test_benchmark_dry_run_accepts_custom_graph_matrix(tmp_path: Path) -> None:
             "--mtps",
             "1,6",
             "--capacities",
-            "4096,8192",
+            "4096,8192,14336,14337,16384",
             "--cache-states",
             "cold",
             "--execution",
@@ -69,7 +69,8 @@ def test_benchmark_dry_run_accepts_custom_graph_matrix(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     plan = json.loads((tmp_path / "plan.json").read_text())
-    assert plan["case_count"] == 24
+    assert plan["case_count"] == 60
+    assert {case["capacity"] for case in plan["cases"]} == {4096, 8192, 14336, 14337, 16384}
     assert plan["timing"] == {"warmup": 4, "iterations": 3, "rounds": 2, "seed": 2026}
     assert all(case["execution"] == "graph" for case in plan["cases"])
 

@@ -264,10 +264,13 @@ def test_plan_rejects_mixed_device_state_before_mutation() -> None:
 
 
 @pytest.mark.npu_inline
-def test_plan_rejects_gm_workspace_with_wrong_row_stride_before_mutation() -> None:
+@pytest.mark.parametrize("capacity", [14337, 16384])
+def test_plan_rejects_gm_workspace_with_wrong_row_stride_before_mutation(capacity: int) -> None:
     # Given: a GM-path workspace whose second row starts at a wider stride than the kernel uses.
-    case = _make_case(capacity=16384, rows=2)
+    case = _make_case(topk=2048, capacity=capacity, rows=2)
     width = _workspace_elements(case.topk, case.capacity)
+    # TopK=4 would keep these capacities in UB after the scratch-layout reduction.
+    assert width * case.compact_workspace.element_size() > 112 * 1024, "case must require GM scratch"
     case = replace(case, compact_workspace=torch.empty((2, width + 1), dtype=torch.int32, device="npu"))
     last_req_ids_before = case.last_req_ids.clone()
 

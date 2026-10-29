@@ -127,7 +127,10 @@ def test_simt_fused_plan_uses_full_persistent_workspace_and_original_state():
     ("capacity", "expected_shape"),
     [
         (8, (1, 1)),
-        (16384, (3, sparse_kv_plan_workspace_elements(4, 16384))),
+        (16384, (1, 1)),
+        (28572, (1, 1)),
+        (28573, (3, 28673)),
+        (32768, (3, 32868)),
     ],
 )
 def test_simt_constructor_allocates_workspace_only_when_plan_exceeds_ub(

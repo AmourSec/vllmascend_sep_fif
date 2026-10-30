@@ -7,6 +7,7 @@ import torch_npu
 from torch import nn
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.distributed import get_tp_group
+from vllm.logger import logger
 from vllm.triton_utils import HAS_TRITON
 from vllm.v1.attention.backend import (
     AttentionBackend,
@@ -18,6 +19,15 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.utils import select_common_block_size
 
 from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.attention.indexer_prefetch import (
+    execute_prefetch_overlap,
+    is_supported as is_indexer_prefetch_supported,
+    normalize_index_weights,
+    normalize_key_scale,
+    prepare_threshold_history,
+    run_prefetch_stage,
+    update_threshold_ema,
+)
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.distributed.utils import all_gather_async
@@ -74,6 +84,15 @@ class AscendSFAIndexerMetadata:
     # gather splits the local prefill region on it (all-decode batches skip
     # the gather).
     num_decode_tokens: int = 0
+    # Sparse-offload runtime context. It is injected by the main SFA layer
+    # immediately before this indexer runs; ordinary indexer users leave it
+    # unset and take the baseline DeviceOperator path.
+    offload_layer_name: str | None = None
+    offload_req_ids: torch.Tensor | None = None
+    offload_token_to_req: torch.Tensor | None = None
+    offload_num_decodes: int = 0
+    offload_num_decode_tokens: int = 0
+    offload_num_prefills: int = 0
 
 
 class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
@@ -357,6 +376,169 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
                 scale_handle.wait()
         return k_li, k_li_scale, slot_mapping
 
+    def _run_indexer_prefetch(
+        self,
+        q_li: torch.Tensor,
+        q_li_scale: torch.Tensor | None,
+        weights: torch.Tensor,
+        indexer_metadata: AscendSFAIndexerMetadata,
+    ) -> torch.Tensor | None:
+        """Run ECHO stage 0/1 and overlap candidate KV transfer on A5."""
+        config = get_ascend_config().sparse_kv_offload_config
+        if not config.indexer_prefetch or not config.enabled:
+            return None
+
+        # Keep the manager import lazy: it imports the scratch definitions used
+        # here and is initialized only for sparse-offload workers.
+        from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_manager import (  # noqa: PLC0415
+            get_sparse_kv_offload_manager,
+        )
+
+        manager = get_sparse_kv_offload_manager()
+        scratch = manager.indexer_prefetch_scratch
+        pure_uniform_decode = (
+            indexer_metadata.offload_num_prefills == 0
+            and indexer_metadata.offload_num_decodes > 0
+            and indexer_metadata.offload_num_decode_tokens == indexer_metadata.offload_num_decodes
+        )
+        supported = is_indexer_prefetch_supported(
+            sparse_offload=config.enabled,
+            rank_local_simt=manager.uses_simt_lru,
+            fused_overlap=manager.use_fused_overlap,
+            head_count=self.n_head,
+            head_dim=self.head_dim,
+            topk=self.topk_tokens,
+            is_decode=indexer_metadata.offload_num_decodes > 0,
+            uniform_queries=pure_uniform_decode,
+            mtp=get_current_vllm_config().speculative_config is not None,
+        )
+        if scratch is None or not supported or not self.enable_sparse_li_c8:
+            return None
+        if (
+            q_li_scale is None
+            or indexer_metadata.offload_layer_name is None
+            or indexer_metadata.offload_req_ids is None
+            or indexer_metadata.offload_token_to_req is None
+            or indexer_metadata.actual_seq_lengths_key is None
+        ):
+            return None
+
+        row_capacity = q_li.shape[0] // self.n_head
+        if row_capacity <= 0 or row_capacity > scratch.scores.shape[0]:
+            return None
+        if (
+            indexer_metadata.actual_seq_lengths_key.shape[0] < row_capacity
+            or indexer_metadata.block_table.shape[0] < row_capacity
+            or indexer_metadata.offload_req_ids.shape[0] < row_capacity
+            or indexer_metadata.offload_token_to_req.shape[0] < row_capacity
+        ):
+            return None
+
+        layer_id = manager._get_offload_layer_id(indexer_metadata.offload_layer_name)
+        layer_state = manager.indexer_prefetch_layer_states[layer_id]
+        query = q_li.view(row_capacity, self.n_head, self.head_dim)
+        query_scale = q_li_scale.view(row_capacity, self.n_head).to(dtype=torch.float32)
+        key = self.k_cache.kv_cache[INDEXER_K_CACHE_SLOT]
+        key_scale = self.k_cache.kv_cache[INDEXER_SCALE_CACHE_SLOT]
+        fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+        if (
+            fp8_dtype is None
+            or query.dtype != fp8_dtype
+            or key.dtype != fp8_dtype
+            or query.shape[1:] != (self.n_head, self.head_dim)
+            or key.ndim != 4
+            or key.shape[-2:] != (1, self.head_dim)
+        ):
+            return None
+        index_weights = normalize_index_weights(
+            weights,
+            rows=row_capacity,
+            heads=self.n_head,
+        )
+        if index_weights is None:
+            return None
+        key_scale = normalize_key_scale(key_scale)
+        block_size = key.shape[1]
+        if (
+            block_size < 16
+            or block_size > 1024
+            or block_size % 16 != 0
+            or key.stride(3) != 1
+            or key.stride(2) < self.head_dim
+            or key.stride(1) != self.head_dim
+            or key_scale.ndim != 2
+            or key_scale.shape[:2] != key.shape[:2]
+            or key_scale.stride(1) != 1
+            or indexer_metadata.block_table.shape[1] * block_size < scratch.scores.shape[1]
+        ):
+            return None
+        key_scale = key_scale.to(dtype=torch.float32)
+        seq_lens = indexer_metadata.actual_seq_lengths_key[:row_capacity].to(dtype=torch.int32)
+        block_table = indexer_metadata.block_table[:row_capacity].to(dtype=torch.int32)
+        stable_prefix_lens = (seq_lens - 1).clamp_min_(0)
+        request_ids = indexer_metadata.offload_req_ids[:row_capacity].to(dtype=torch.int64)
+        token_to_req = indexer_metadata.offload_token_to_req[:row_capacity].to(dtype=torch.int32)
+        scratch.active_rows.copy_((seq_lens > 0).sum(dtype=torch.int32).reshape(1))
+        prepare_threshold_history(layer_state, request_ids, scratch.active_rows)
+        thresholds = layer_state.thresholds[:row_capacity]
+
+        overlap_executed = execute_prefetch_overlap(
+            stage_zero=lambda: run_prefetch_stage(
+                query,
+                key,
+                index_weights,
+                query_scale,
+                key_scale,
+                seq_lens,
+                block_table,
+                thresholds,
+                stable_prefix_lens,
+                scratch.active_rows,
+                scratch,
+                0,
+                config.indexer_prefetch_budget_divisor,
+            ),
+            launch_transfer=lambda: manager.launch_indexer_candidate_prefetch(
+                layer_name=indexer_metadata.offload_layer_name,
+                candidates=scratch.candidates[:row_capacity],
+                active_rows=scratch.active_rows,
+                req_ids=request_ids,
+                stable_prefix_lens=stable_prefix_lens,
+                visible_seq_lens=seq_lens,
+                token_to_req=token_to_req,
+                block_table=block_table,
+            ),
+            stage_one=lambda: run_prefetch_stage(
+                query,
+                key,
+                index_weights,
+                query_scale,
+                key_scale,
+                seq_lens,
+                block_table,
+                thresholds,
+                stable_prefix_lens,
+                scratch.active_rows,
+                scratch,
+                1,
+                config.indexer_prefetch_budget_divisor,
+            ),
+            update_history=lambda: update_threshold_ema(
+                layer_state,
+                request_ids,
+                scratch.kth_scores[:row_capacity],
+                scratch.active_rows,
+            ),
+            wait_transfer=manager.wait_indexer_candidate_prefetch,
+        )
+        if not overlap_executed:
+            logger.warning_once(
+                "Sparse KV indexer prefetch was enabled, but _C_ascend.npu_qli_prefetch_stage is unavailable; "
+                "using the baseline indexer without launching a candidate LRU plan."
+            )
+            return None
+        return scratch.exact_indices[:row_capacity]
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -439,6 +621,15 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
             q_li = q_li @ AscendSFAIndexerBackend.q_hadamard
             q_li, q_li_scale = torch_npu.npu_dynamic_quant(q_li.view(-1, self.head_dim), dst_type=self.c8_k_cache_dtype)
             q_li_scale = q_li_scale.to(self.c8_k_scale_cache_dtype)  # [b*s,]
+
+        prefetched_indices = self._run_indexer_prefetch(
+            q_li,
+            q_li_scale,
+            weights,
+            indexer_metadata,
+        )
+        if prefetched_indices is not None:
+            return prefetched_indices
 
         return DeviceOperator.indexer_select_post_process(
             q_li,

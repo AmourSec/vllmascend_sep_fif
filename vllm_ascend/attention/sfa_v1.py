@@ -1369,6 +1369,14 @@ class AscendSFAImpl(MLAAttentionImpl):
             topk_indices_to_cache = topk_indices_to_cache.squeeze(1)
         topk_indices_buffer.copy_(topk_indices_to_cache)
 
+    def _prepare_indexer_prefetch_metadata(
+        self,
+        indexer_metadata,
+        attn_metadata: M,
+    ) -> None:
+        """Let specialized SFA backends attach indexer-side runtime context."""
+        del indexer_metadata, attn_metadata
+
     def _execute_sparse_flash_attention_process(
         self,
         ql_nope,
@@ -1754,6 +1762,7 @@ class AscendSFAImpl(MLAAttentionImpl):
             indexer_attn_metadata.actual_seq_lengths_query = parallel_context.actual_seq_lengths_query
             indexer_attn_metadata.actual_seq_lengths_key = parallel_context.actual_seq_lengths_key
             indexer_attn_metadata.num_decode_tokens = attn_metadata.num_decode_tokens
+            self._prepare_indexer_prefetch_metadata(indexer_attn_metadata, attn_metadata)
             topk_indices = self.indexer(
                 hidden_states,
                 q_c,

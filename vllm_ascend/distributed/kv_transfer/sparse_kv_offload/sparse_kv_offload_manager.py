@@ -31,6 +31,10 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.utils import CpuGpuBuffer
 
 from vllm_ascend.ascend_config import SparseKVOffloadConfig, get_ascend_config
+from vllm_ascend.attention.indexer_prefetch import (
+    IndexerPrefetchLayerState,
+    IndexerPrefetchScratch,
+)
 from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_simt_lru import SparseKVSimtLru
 from vllm_ascend.utils import AscendDeviceType, bootstrap_custom_op_env, enable_custom_op, get_ascend_device_type
 
@@ -575,6 +579,13 @@ class SparseKVOffloadManager:
         self.device_type = get_ascend_device_type()
         self.rank_local_host_pool = self.device_type == AscendDeviceType.A5
         self.uses_simt_lru = self.rank_local_host_pool
+        self.indexer_prefetch_scratch: IndexerPrefetchScratch | None = None
+        self.indexer_prefetch_layer_states: list[IndexerPrefetchLayerState] = []
+        self.indexer_prefetch_stream = None
+        self.indexer_prefetch_compute_ready = None
+        self.indexer_prefetch_done = None
+        if sparse_kv_offload_config.indexer_prefetch and not self.rank_local_host_pool:
+            raise ValueError("Sparse KV indexer prefetch is supported only by the Atlas A5 rank-local SIMT backend")
 
         self.max_num_reqs = vllm_config.scheduler_config.max_num_seqs
         self.max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
@@ -932,6 +943,19 @@ class SparseKVOffloadManager:
         # and decode can produce up to max_num_tokens rows.
         d2h_descriptor_rows = self.max_num_tokens * 2
         device = self.topk_buffers_k[0].device
+        if self.sparse_kv_offload_config.indexer_prefetch:
+            self.indexer_prefetch_scratch = IndexerPrefetchScratch.allocate(
+                self.max_num_topk_rows,
+                self.max_model_len,
+                device,
+            )
+            self.indexer_prefetch_layer_states = [
+                IndexerPrefetchLayerState.allocate(self.max_num_topk_rows, device)
+                for _ in range(self.num_layers)
+            ]
+            self.indexer_prefetch_stream = torch_npu.npu.Stream()
+            self.indexer_prefetch_compute_ready = torch_npu.npu.Event()
+            self.indexer_prefetch_done = torch_npu.npu.Event()
         self.d2h_src_ptrs_npu = torch.empty(d2h_descriptor_rows, dtype=torch.int64, device=device)
         self.d2h_dst_ptrs_npu = torch.empty(d2h_descriptor_rows, dtype=torch.int64, device=device)
         self.d2h_lengths_npu = torch.empty(d2h_descriptor_rows, dtype=torch.int32, device=device)
@@ -1363,6 +1387,50 @@ class SparseKVOffloadManager:
             capturing,
             skip_topk,
         )
+
+    def launch_indexer_candidate_prefetch(
+        self,
+        *,
+        layer_name: str,
+        candidates: torch.Tensor,
+        active_rows: torch.Tensor,
+        req_ids: torch.Tensor,
+        stable_prefix_lens: torch.Tensor,
+        visible_seq_lens: torch.Tensor,
+        token_to_req: torch.Tensor,
+        block_table: torch.Tensor,
+    ):
+        """Launch candidate Plan+Transfer after stage 0 on the prefetch stream."""
+        if (
+            self.indexer_prefetch_stream is None
+            or self.indexer_prefetch_scratch is None
+            or self.indexer_prefetch_compute_ready is None
+            or self.indexer_prefetch_done is None
+        ):
+            raise RuntimeError("Sparse KV indexer prefetch workspaces are not registered")
+        layer_id = self._get_offload_layer_id(layer_name)
+        self.indexer_prefetch_compute_ready.record(torch_npu.npu.current_stream())
+        with torch_npu.npu.stream(self.indexer_prefetch_stream):
+            self.indexer_prefetch_stream.wait_event(self.indexer_prefetch_compute_ready)
+            self.simt_lru.active_rows.copy_(active_rows)
+            self.simt_lru.plan_and_transfer(
+                layer_id=layer_id,
+                req_ids=req_ids,
+                topk_indices=candidates,
+                stable_prefix_lens=stable_prefix_lens,
+                visible_seq_lens=visible_seq_lens,
+                token_to_req=token_to_req,
+                block_table=block_table,
+                resident_k=self.topk_buffers_k[layer_id],
+                resident_v=self.topk_buffers_v[layer_id],
+            )
+            self.indexer_prefetch_done.record(self.indexer_prefetch_stream)
+            return self.indexer_prefetch_done
+
+    @staticmethod
+    def wait_indexer_candidate_prefetch(prefetch_done) -> None:
+        """Fence exact selection against the candidate transfer completion."""
+        torch_npu.npu.current_stream().wait_event(prefetch_done)
 
     def _onload_topk_kv_simt(
         self,

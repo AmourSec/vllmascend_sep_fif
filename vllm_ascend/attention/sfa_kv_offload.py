@@ -75,6 +75,16 @@ def _fsa_selection_status_stride(topk: int) -> int:
     )
 
 
+def _reuse_simt_plan(
+    uses_simt_lru: bool,
+    skip_topk: bool,
+    prefetch_enabled: bool,
+    is_mtp_layer: bool,
+) -> bool:
+    """Whether a layer may reuse another layer's resident transfer plan."""
+    return uses_simt_lru and skip_topk and not prefetch_enabled and not is_mtp_layer
+
+
 def _check_device_kv_cache_exist() -> None:
     # prefill/mixed handling only exists for single-node PD-colocate debug;
     # a PD-disaggregated decode node never receives prefill batches.
@@ -363,6 +373,21 @@ class AscendSFAKVOffloadImpl(AscendSFAImpl):
             return super().forward(layer_name, hidden_states, kv_cache, attn_metadata, output)
         finally:
             self._current_layer_name = None
+
+    def _prepare_indexer_prefetch_metadata(
+        self,
+        indexer_metadata,
+        attn_metadata: M,
+    ) -> None:
+        """Pass decode request identity to the indexer without global state."""
+        if not get_ascend_config().sparse_kv_offload_config.indexer_prefetch:
+            return
+        indexer_metadata.offload_layer_name = self._offload_layer_name()
+        indexer_metadata.offload_req_ids = attn_metadata.req_ids_tensor
+        indexer_metadata.offload_token_to_req = attn_metadata.token_to_req
+        indexer_metadata.offload_num_decodes = attn_metadata.num_decodes
+        indexer_metadata.offload_num_decode_tokens = attn_metadata.num_decode_tokens
+        indexer_metadata.offload_num_prefills = attn_metadata.num_prefills
 
     def _compute_kv_only(
         self,
@@ -1110,9 +1135,17 @@ class AscendSFAKVOffloadImpl(AscendSFAImpl):
             num_decode_tokens,
         )
         layer_id = manager._get_offload_layer_id(layer_name)
+        # ECHO prefetch keeps independent SIMT plans per layer because the
+        # candidate set is produced by that layer's indexer stage.
+        prefetch_enabled = manager.indexer_prefetch_scratch is not None
         # MTP can reuse Indexer output only after compacting its rows.  It
         # therefore still needs a device Plan for the new row mapping.
-        reuse_simt_plan = manager.uses_simt_lru and self.skip_topk and layer_id != manager.mtp_layer_id
+        reuse_simt_plan = _reuse_simt_plan(
+            manager.uses_simt_lru,
+            self.skip_topk,
+            prefetch_enabled,
+            layer_id == manager.mtp_layer_id,
+        )
         run_lru_plan = not self.skip_topk or (manager.uses_simt_lru and not reuse_simt_plan)
         if not run_lru_plan:
             decode_stable_prefix_lens = decode_seq_lens
@@ -1165,7 +1198,7 @@ class AscendSFAKVOffloadImpl(AscendSFAImpl):
             decode_seq_lens,
             token_to_req,
             capturing=self._in_graph_runtime(),
-            skip_topk=self.skip_topk,
+            skip_topk=self.skip_topk and not prefetch_enabled,
         )
         decode_attn_output = DeviceOperator.execute_sparse_flash_attention_process(
             self,

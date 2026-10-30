@@ -55,6 +55,7 @@
 #include "attention/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_310_torch_adpt.h"
 #include "attention/k2q_csr/k2q_csr_torch_adpt.h"
 #include "attention/sparse_kv_plan/sparse_kv_lru_torch_adpt.h"
+#include "attention/quant_lightning_indexer_prefetch/qli_prefetch_torch_adpt.h"
 #include "attention/msa_index_score/msa_index_score_torch_adpt.h"
 #include "attention/sparse_attention_score/sparse_attention_score_torch_adpt.h"
 #include "attention/store_kv_block/store_kv_block_torch_adpt.h"
@@ -3420,6 +3421,16 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         );
     ops.impl("npu_quant_lightning_indexer_v2", torch::kPrivateUse1,
              &vllm_ascend::npu_quant_lightning_indexer_v2_compat_npu);
+
+    // Ascend 950 staged QLI prefetch. All result buffers are caller-owned and
+    // mutated in place so CUDA/NPU graph addresses remain stable.
+    ops.def(
+        "npu_qli_prefetch_stage(Tensor query, Tensor key, Tensor weights, Tensor qscale, Tensor kscale, "
+        "Tensor seq_lens, Tensor block_table, Tensor thresholds, Tensor stable_prefix_lens, Tensor active_rows, "
+        "Tensor(a!) scores, Tensor(b!) candidates, Tensor(c!) candidate_counts, Tensor(d!) exact_indices, "
+        "Tensor(e!) kth_scores, int stage, int budget_divisor=32) -> ()");
+    ops.impl("npu_qli_prefetch_stage", torch::kPrivateUse1, &vllm_ascend::npu_qli_prefetch_stage);
+    ops.impl("npu_qli_prefetch_stage", torch::kMeta, &vllm_ascend::npu_qli_prefetch_stage_meta);
 
     ops.def(
         "npu_sparse_attn_sharedkv("

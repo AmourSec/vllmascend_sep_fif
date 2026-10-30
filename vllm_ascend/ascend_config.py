@@ -427,7 +427,9 @@ class AscendConfig:
                 "enabled": false,
                 "topk_buffer_size": 4096,
                 "dram_size_per_dp_GB": 128,
-                "keep_device_kv_cache": false
+                "keep_device_kv_cache": false,
+                "indexer_prefetch": false,
+                "indexer_prefetch_budget_divisor": 32
             }
         }
 
@@ -1392,6 +1394,8 @@ class SparseKVOffloadConfig:
     keep_device_kv_cache: bool = False
     topk: int = dataclasses.field(default=0, init=False)
     use_fused_overlap: bool = False
+    indexer_prefetch: bool = False
+    indexer_prefetch_budget_divisor: int = 32
 
     @model_validator(mode="after")
     def _validate_values(self):
@@ -1399,6 +1403,10 @@ class SparseKVOffloadConfig:
             raise ValueError("sparse_kv_offload_config.topk_buffer_size must be positive")
         if self.dram_size_per_dp_GB <= 0:
             raise ValueError("sparse_kv_offload_config.dram_size_per_dp_GB must be positive")
+        if self.indexer_prefetch_budget_divisor <= 0:
+            raise ValueError("sparse_kv_offload_config.indexer_prefetch_budget_divisor must be positive")
+        if self.indexer_prefetch and self.use_fused_overlap:
+            raise ValueError("sparse_kv_offload_config.indexer_prefetch cannot be combined with use_fused_overlap")
         return self
 
     @classmethod
